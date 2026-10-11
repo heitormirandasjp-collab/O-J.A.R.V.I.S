@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#060a12" />
+  <title>JARVIS — Command Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="bg-layers" aria-hidden="true">
+    <div class="bg-grid"></div>
+    <div class="bg-glow bg-glow-a"></div>
+    <div class="bg-glow bg-glow-b"></div>
+    <div class="bg-scan"></div>
+    <canvas id="stars"></canvas>
+  </div>
+
+  <!-- barra de título própria (usada quando roda como app desktop/Electron) -->
+  <div class="titlebar" id="titlebar" hidden>
+    <div class="tb-brand"><span class="tb-dot"></span> JARVIS <small>COMMAND CENTER</small></div>
+    <div class="tb-actions">
+      <button class="tb-btn" id="winMin" title="Minimizar">—</button>
+      <button class="tb-btn" id="winMax" title="Maximizar">▢</button>
+      <button class="tb-btn close" id="winClose" title="Fechar">✕</button>
+    </div>
+  </div>
+
+  <div class="app">
+    <!-- ══════════ SIDEBAR ══════════ -->
+    <aside class="sidebar panel-line">
+      <div class="brand">
+        <div class="brand-mark"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></div>
+        <div class="brand-text">
+          <h1>JARVIS</h1>
+          <small>COMMAND CENTER</small>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav">
+        <button class="nav-item active" data-view="command"><span class="ni-ico">▣</span> Painel</button>
+        <button class="nav-item disabled" data-view="system" aria-disabled="true" title="Painel removido — o globo é o painel"><span class="ni-ico">◎</span> Sistema</button>
+        <button class="nav-item disabled" data-view="modules" aria-disabled="true" title="Painel removido"><span class="ni-ico">◉</span> Módulos</button>
+        <button class="nav-item disabled" data-view="market" aria-disabled="true" title="Painel removido"><span class="ni-ico">▤</span> Mercado</button>
+        <button class="nav-item disabled" data-view="activity" aria-disabled="true" title="Painel removido"><span class="ni-ico">☑</span> Atividade</button>
+        <button class="nav-item" data-view="conversations" id="navChat"><span class="ni-ico">▢</span> Conversas</button>
+        <button class="nav-item" data-view="settings" id="navSettings"><span class="ni-ico">⚙</span> Configurações</button>
+      </nav>
+
+      <div class="voice-block">
+        <div class="voice-head"><span>STATUS DE VOZ</span><span class="chev" id="voiceChev">›</span></div>
+        <div class="wave" id="sideWave" aria-hidden="true"></div>
+        <div class="voice-label" id="voiceLabel">Toque para falar</div>
+        <button class="mic-btn" id="micBtn" title="Falar com o JARVIS">
+          <span class="mic-pulse"></span>
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <rect x="9" y="2.5" width="6" height="11" rx="3"></rect>
+            <path d="M5 11a7 7 0 0 0 14 0M12 18.5V22"></path>
+          </svg>
+        </button>
+        <div class="mic-hint" id="micHint">Falar agora</div>
+        <div class="mic-test">
+          <button class="mic-test-btn" id="micTestBtn" title="Testar microfone">Testar microfone</button>
+          <div class="mic-tester" id="micTester" hidden>
+            <div class="mic-tester-label">Nível: <span id="micTesterLvl">silêncio</span></div>
+            <div class="mic-tester-bar"><span id="micTesterBar"></span></div>
+            <div class="mic-test-help">Fale ou bata na mesa para ver o nível.</div>
+          </div>
+        </div>
+        <button class="focus-btn" id="wakeBtn"><span>◈</span> <span id="wakeLabel">Escuta contínua: OFF</span></button>
+        <button class="focus-btn" id="viz3dBtn"><span>▣</span> Visualizar em 3D</button>
+        <div class="viz3d-row" id="viz3dRow" hidden>
+          <input id="viz3dInput" type="text" maxlength="200" placeholder="ex.: um carro vermelho" />
+          <button id="viz3dGo">Ver</button>
+        </div>
+        <button class="focus-btn" id="weatherBtn"><span>🌤️</span> Clima</button>
+        <div class="weather-box" id="weatherBox" hidden>
+          <div class="wx-head"><b id="wxCity">—</b><small id="wxSrc">—</small></div>
+          <div class="wx-temp"><b id="wxTemp">—</b><small id="wxDesc">—</small></div>
+          <div class="wx-grid">
+            <div><small>Sensação</small><b id="wxFeels">—</b></div>
+            <div><small>Umidade</small><b id="wxHum">—</b></div>
+            <div><small>Vento</small><b id="wxWind">—</b></div>
+            <div><small>Máx / Mín</small><b id="wxRange">—</b></div>
+          </div>
+          <div class="wx-foot"><small>Medição</small><b id="wxMeasured">—</b></div>
+        </div>
+        <button class="focus-btn" id="memoryBtn"><span>🧠</span> Memórias</button>
+        <div class="memory-box" id="memoryBox" hidden>
+          <div class="mem-head"><b>MEMÓRIAS</b><small id="memTotal">—</small></div>
+          <ul class="mem-list" id="memList"></ul>
+          <div class="mem-actions">
+            <button id="memRefresh">Atualizar</button>
+            <button id="memReset" class="danger">Resetar tudo</button>
+          </div>
+        </div>
+        <button class="focus-btn" id="codeBtn"><span>💻</span> Programar</button>
+        <div class="viz3d-row" id="codeRow" hidden>
+          <input id="codeInput" type="text" maxlength="500" placeholder="ex.: um site de portfólio" />
+          <button id="codeGo">Gerar</button>
+        </div>
+        <button class="focus-btn" id="newsBtn"><span>📰</span> Notícias</button>
+        <div class="viz3d-row news-row" id="newsRow" hidden>
+          <select id="newsSource">
+            <option value="g1">G1</option>
+            <option value="thenews">the news</option>
+          </select>
+          <select id="newsTopic"></select>
+          <button id="newsGo">Ver</button>
+        </div>
+        <div class="news-box" id="newsBox" hidden>
+          <div class="mem-head"><b>NOTÍCIAS</b><small id="newsInfo">—</small></div>
+          <ul class="mem-list" id="newsList"></ul>
+          <div class="mem-actions">
+            <button id="newsSpeak">🔈 Ouvir</button>
+            <button id="newsRefresh">Atualizar</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="side-foot">
+        <div class="sf-item"><span class="sf-ico">▣</span><div><small>Host</small><b id="sfHost">—</b></div></div>
+        <div class="sf-item"><span class="sf-ico">◷</span><div><small>Ligado há</small><b id="sfUptime">—</b></div></div>
+        <div class="sf-item"><span class="sf-ico net">▂</span><div><small>Rede</small><b class="ok" id="sfNet">—</b></div></div>
+      </div>
+    </aside>
+
+    <!-- ══════════ MAIN ══════════ -->
+    <main class="main">
+      <!-- TOPBAR -->
+      <header class="topbar">
+        <div class="chip status-chip" id="sysChip"><span class="dot green blink"></span> SISTEMA <b id="sysState">—</b></div>
+        <div class="clockbox">
+          <div class="date" id="today">—</div>
+          <div class="clock" id="clock">--:--:--</div>
+        </div>
+        <div class="top-right">
+          <label class="search">
+            <span>⌕</span>
+            <input id="search" type="text" placeholder="Perguntar ao JARVIS..." />
+            <kbd>⌘K</kbd>
+          </label>
+          <button class="ico-btn" id="ttsQuickBtn" title="Voz do JARVIS (TTS)">🔈</button>
+          <button class="ico-btn" id="gearBtn" title="Configurações">⚙</button>
+          <div class="operator">
+            <div class="op-text"><b id="opModel">—</b><small id="opProvider">provedor</small></div>
+            <div class="avatar"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg></div>
+          </div>
+        </div>
+      </header>
+
+      <!-- GRID -->
+      <div class="grid" id="grid">
+
+        <!-- CORE GLOBE -->
+        <section class="cell cell-globe rise" style="--d:.12s">
+          <div class="globe-wrap">
+            <canvas id="globe"></canvas>
+            <div class="globe-overlay">
+              <div class="g-title">J.A.R.V.I.S.</div>
+              <div class="g-sub">AI CORE</div>
+              <div class="g-ver" id="engineLabel">aguardando...</div>
+            </div>
+            <div class="corner tl"></div><div class="corner tr"></div>
+            <div class="corner bl"></div><div class="corner br"></div>
+          </div>
+        </section>
+
+      </div>
+
+      <!-- BOTTOM BAR (dados reais) -->
+      <footer class="talkbar">
+        <div class="tb-side">
+          <div class="sf-item"><span class="sf-ico">▣</span><div><small>Host</small><b id="tbHost">—</b></div></div>
+          <div class="sf-item"><span class="sf-ico">◷</span><div><small>Ligado há</small><b id="tbUptime">—</b></div></div>
+          <div class="sf-item"><span class="sf-ico net">▂</span><div><small>Rede</small><b class="ok" id="tbNet">—</b></div></div>
+        </div>
+        <button class="talk-pill" id="talkPill">
+          <span class="tp-wave" id="pillWave"></span>
+          <span class="tp-text"><b>FALE COM O JARVIS</b><small id="pillStatus">clique ou diga "Jarvis"</small></span>
+          <span class="tp-wave right" id="pillWave2"></span>
+        </button>
+        <button class="exec-btn" id="execBtn">▷ Resumo do Sistema</button>
+      </footer>
+    </main>
+  </div>
+
+  <!-- ══════════ CHAT OVERLAY ══════════ -->
+  <div class="chat-overlay" id="chatOverlay" hidden>
+    <div class="chat-panel">
+      <header class="chat-head">
+        <div class="ch-left">
+          <span class="brand-dot"></span>
+          <div><b>JARVIS</b><small id="providerBadge">provedor: —</small></div>
+        </div>
+        <div class="ch-right">
+          <span class="chip mini" id="chatState"><span class="dot green blink"></span>PRONTO</span>
+          <button class="ico-btn" id="ttsBtn" title="Voz do JARVIS (TTS)">🔈</button>
+          <button class="ico-btn" id="clearChat" title="Limpar">🗑</button>
+          <button class="ico-btn" id="closeChat" title="Fechar">✕</button>
+        </div>
+      </header>
+      <div class="chat-log" id="chatLog"></div>
+      <form class="chat-input" id="chatForm">
+        <button type="button" class="ico-btn mic" id="chatMic" title="Falar agora">◉</button>
+        <input id="chatText" type="text" autocomplete="off" placeholder="Pergunte algo ao JARVIS..." />
+        <button type="submit" class="send-btn" id="sendBtn">ENVIAR ▸</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ══════════ CONFIGURAÇÕES ══════════ -->
+  <div class="modal-overlay" id="settingsModal" hidden>
+    <div class="modal">
+      <header><b>PROVEDOR &amp; VOZ</b><button class="ico-btn" id="closeSettings">✕</button></header>
+      <div class="modal-body">
+        <p class="hint">Chave da <b>Groq</b> (console.groq.com). Ela fica só em <code>config.json</code>, neste computador.</p>
+        <label>Groq API Key<input id="setGroqKey" type="password" placeholder="gsk_..." /></label>
+        <label>Modelo (opcional)<input id="setGroqModel" type="text" placeholder="padrão: openai/gpt-oss-120b" /></label>
+
+        <label>Motor de voz
+          <div class="seg" id="setTtsEngine">
+            <button type="button" class="seg-btn" data-engine="piper">Piper (offline)</button>
+            <button type="button" class="seg-btn" data-engine="edge">Edge TTS (neural)</button>
+          </div>
+        </label>
+        <label>Voz do JARVIS
+          <select id="setVoice"></select>
+        </label>
+        <p class="hint dim" id="engineHint"></p>
+        <label>Velocidade da fala <output id="rateOut">1.35×</output>
+          <input id="setRate" type="range" min="0.80" max="1.80" step="0.05" />
+        </label>
+        <label>Tom da voz (grave ↔ agudo) <output id="pitchOut">−2.0</output>
+          <input id="setPitch" type="range" min="-5" max="5" step="0.5" />
+        </label>
+        <label>Escuta contínua após "Jarvis" (minutos; <b>0</b> = infinito)
+          <input id="setContinuousMin" type="number" min="0" max="1440" step="1" value="5" />
+        </label>
+        <div class="modal-actions">
+          <button class="ghost-btn" id="previewVoice">Testar voz</button>
+          <button class="ghost-btn" id="downloadVoice">Baixar voz Piper</button>
+          <button class="primary-btn" id="saveSettings">Salvar</button>
+        </div>
+        <p class="hint dim" id="settingsMsg"></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <!-- modo foco: sai dos painéis (ESC também funciona) -->
+  <button class="focus-exit" id="focusExit" hidden>▢ Mostrar painéis</button>
+
+  <!-- Three.js (globo 3D). Se não carregar, o app cai para o globo 2D. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
