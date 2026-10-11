@@ -118,6 +118,22 @@ app Electron, que sobem tudo sozinhos. O que dá pra fazer:
   `127.0.0.1:8755`/`localhost:8755`, mas quem alcança a porta manda no app;
 - **`/exec`** roda comandos no shell e **`/power`** desliga/reinicia o PC — os dois têm
   blacklist, confirmação e log, mas **não são um sandbox**: trate o modelo como não confiável;
+
+> 🔴 **Estes endpoints são perigosos: NUNCA exponha o backend na internet. Só use
+> localmente.**
+
+- **`/exec` e `/power` exigem token (v1.0.16)**: as duas rotas têm autenticação
+  obrigatória — só respondem quando a variável de ambiente `JARVIS_EXEC_TOKEN` está
+  definida **e** a chamada traz o mesmo valor no header `X-Jarvis-Token`. Sem a env
+  (ou com token ausente/errado) a resposta é **403** `{"detail": "<motivo>"}` e o
+  bloqueio vai para o `security.log`. Para ativar:
+  1. gere um valor: `python -c "import secrets;print(secrets.token_urlsafe(32))"`;
+  2. defina no ambiente antes de subir o backend — PowerShell da sessão:
+     `$env:JARVIS_EXEC_TOKEN="<valor>"` (ou `setx JARVIS_EXEC_TOKEN "<valor>"` para
+     valer em novas janelas);
+  3. envie `X-Jarvis-Token: <valor>` em cada chamada a `/exec` e `/power`.
+  O template está em [`.env.example`](.env.example); o projeto **não** carrega `.env`
+  automaticamente, a variável precisa estar no ambiente;
 - a chave da Groq no `config.json` é **seu** segredo — não commite nem compartilhe o arquivo
   (por isso ele está fora do versionamento).
 
@@ -819,6 +835,14 @@ e tudo passa por validação no backend. Resumo do que foi endurecido:
   máximo de **1 MB**;
 - **`/power`**: o `confirmed` do **modelo é descartado** (só o "sim" do Comandante executa),
   **TTL de 120 s**, carência de 30 s, e log de pedidos registrados/confirmados/cancelados/expirados;
+- **`/exec` e `/power` protegidos por token (v1.0.16)**: a dependência
+  `require_exec_token` (via `Depends` em `POST /exec` e `POST /power`) exige o header
+  `X-Jarvis-Token` igual à env `JARVIS_EXEC_TOKEN`, comparado em tempo constante
+  (`secrets.compare_digest`). Sem a env configurada **toda** chamada é negada antes de
+  chegar à rota; com a env mas token ausente/errado, também. Nos dois casos: **403**
+  `{"detail": "<motivo>"}` (handler padrão do `HTTPException`, sem stacktrace) e registro
+  no `security.log` com `[auth] BLOQUEADO …`. `/power/cancel` segue sem token (só
+  cancela um desligamento pendente via `shutdown /a`). Template: `.env.example`;
 - **`/tts`**: máximo de **2000 caracteres** e sanitização (sem caracteres de controle nem SSML);
 - **`/api/chat`**: **rate limit de 30/min**, entrada de **5000** e saída de **10000** caracteres,
   respostas sanitizadas (sem HTML/scripts);

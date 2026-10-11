@@ -3,7 +3,7 @@ JARVIS — backend local (FastAPI), feito do zero.
 Porta 8000 (localhost apenas).
 
 Endpoints:
-  POST /exec        -> executa um comando no Windows (shell=True)
+  POST /exec        -> executa um comando no Windows (shell=True; exige X-Jarvis-Token)
   POST /read-file   -> lê o conteúdo de um arquivo
   GET  /sysinfo     -> CPU, RAM e disco reais (psutil)
   POST /tts         -> sintetiza voz com Piper (WAV, pt-BR); Edge TTS é a reserva
@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -37,7 +38,7 @@ from urllib.parse import quote, urlparse
 
 import psutil
 import requests
-from fastapi import FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -293,9 +294,40 @@ class VoiceIn(BaseModel):
     name: str
 
 
+# ── autenticação de /exec e /power (v1.0.16) ─────────────────────────────
+def require_exec_token(x_jarvis_token: str | None = Header(default=None)) -> str:
+    """Dependência obrigatória de POST /exec e POST /power.
+
+    Exige o header X-Jarvis-Token igual à variável de ambiente JARVIS_EXEC_TOKEN.
+    Sem a env configurada as rotas ficam proibidas (403) — deny-by-default.
+    """
+    expected = (os.environ.get("JARVIS_EXEC_TOKEN") or "").strip()
+    if not expected:
+        _security_log("auth", "JARVIS_EXEC_TOKEN não configurada — /exec e /power proibidos", blocked=True)
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "JARVIS_EXEC_TOKEN não configurada: /exec e /power estão proibidos. "
+                "Defina a variável de ambiente JARVIS_EXEC_TOKEN para habilitá-los."
+            ),
+        )
+    if not x_jarvis_token or not secrets.compare_digest(
+        x_jarvis_token.encode("utf-8"), expected.encode("utf-8")
+    ):
+        _security_log("auth", "token ausente/inválido em /exec ou /power", blocked=True)
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "token ausente ou inválido: envie o header X-Jarvis-Token "
+                "com o valor de JARVIS_EXEC_TOKEN."
+            ),
+        )
+    return expected
+
+
 # ── 1. /exec ────────────────────────────────────────────────────────────
 @app.post("/exec")
-def exec_cmd(body: ExecIn):
+def exec_cmd(body: ExecIn, _exec_token: str = Depends(require_exec_token)):
     cmd = (body.cmd or "").strip()
     if not cmd:
         return JSONResponse({"output": "", "error": "comando vazio"}, status_code=400)
@@ -1204,7 +1236,7 @@ class PowerIn(BaseModel):
 
 
 @app.post("/power")
-def power(body: PowerIn):
+def power(body: PowerIn, _exec_token: str = Depends(require_exec_token)):
     action = (body.action or "shutdown").strip().lower()
     delay = max(5, min(int(body.delay if body.delay is not None else 30), 3600))
 
