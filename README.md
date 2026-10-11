@@ -6,6 +6,131 @@ com streaming via **Groq**. Sem fallback: só Groq.
 > Nada aqui usa o backend do OpenJarvis. Só o modelo de voz vem de lá
 > (`pt-BR-razo-medium.onnx`, na raiz do projeto).
 
+## O que é o JARVIS
+
+Assistente pessoal **local** para Windows, com HUD animado, globo 3D, voz pt-BR (Piper/Edge
+TTS), chat com streaming via **Groq** e ferramentas de verdade na máquina (comandos, leitura
+de arquivos, clima, notícias, agenda, memória persistente). Roda 100% no seu computador: os
+únicos serviços externos são a API da **Groq** (texto) e, se você escolher o Edge TTS, a da
+Microsoft (vozes neurais). Não é o OpenJarvis — projeto próprio, sem backend remoto.
+
+## Arquitetura
+
+```
+┌─────────────────────────┐
+│ Frontend  public/       │  HUD + globo 3D (Three.js r128, servido localmente em
+│ HTML/CSS/JS, sem build  │  /vendor/three.min.js — funciona sem internet)
+└───────────┬─────────────┘
+            │ fetch (mesma origem)
+            ▼
+┌─────────────────────────┐      ┌──────────────────────────┐
+│ Servidor da UI :8755    │ ───▶ │ API da Groq (chat com    │
+│ app.py (Python)         │      │ streaming, tool calling) │
+│  ou server.js (Node)    │      └──────────────────────────┘
+└───────────┬─────────────┘
+            │ BACKEND_URL = http://127.0.0.1:8000
+            ▼
+┌─────────────────────────┐      ┌──────────────────────────┐
+│ Backend :8000           │ ───▶ │ Voz: Piper (local) ou    │
+│ backend/main.py         │      │ Edge TTS (neural)        │
+│ (FastAPI + uvicorn)     │      │ Memória: chroma_db +     │
+└─────────────────────────┘      │ MiniLM (embeddings)      │
+                                 │ Sistema: exec, arquivos, │
+                                 │ clima, notícias, agenda  │
+                                 └──────────────────────────┘
+```
+
+## Requisitos
+
+- Windows 10/11
+- Python **3.10+** (testado em 3.12)
+- Node.js **18+** (testado com 20+ — só é necessário para `server.js` e para o app Electron)
+- No modo `.exe` (`dist/JARVIS/JARVIS.exe`): nada além dos arquivos gerados
+<!-- TODO: requisitos mínimos de hardware (RAM/disco) ainda não medidos -->
+
+## Instalação
+
+```bash
+# 1) clonar
+git clone https://github.com/heitormirandasjp-collab/O-J.A.R.V.I.S.git
+cd O-J.A.R.V.I.S
+
+# 2) backend Python — ferramentas + voz (porta 8000)
+python -m venv backend/venv
+backend\venv\Scripts\activate
+pip install -r backend/requirements.txt
+
+# 3) interface + chat (porta 8755) — um dos dois caminhos:
+node server.js                              # Node puro (sem npm install: só módulos nativos)
+backend\venv\Scripts\python.exe launcher.py  # ou tudo em Python, que ainda abre a janela
+
+# 4) app desktop (opcional)
+cd electron && npm install && npm start
+```
+
+Atalhos no Windows: **`start-backend.bat`** (cria o venv sozinho se faltar e sobe o backend
+na 8000) e **`start-server.bat`** (sobe o `node server.js` na 8755).
+
+Opcional: a **memória com embeddings** (busca semântica em `/memory/*`) exige um dos dois
+fora do `requirements.txt` — `sentence-transformers` (usa PyTorch) ou `chromadb` (reserva
+ONNX MiniLM, leve). Sem nenhum dos dois, o backend sobe, mas a memória responde erro.
+
+Depois, configure a chave da Groq (seção **Configuração**) e abra `http://127.0.0.1:8755`.
+
+## Configuração
+
+Tudo fica em **`config.json`**, na raiz do projeto (no `.exe`, em
+`%APPDATA%\JARVIS\config.json`). Chaves que o código lê hoje:
+
+| Chave | O que é | Padrão |
+|---|---|---|
+| `groqKey` | chave da API da Groq — obrigatória para o chat | — |
+| `groqModel` | modelo do chat (a lista tem fallback interno) | vazio = modelos testados |
+| `tts_engine` | motor de voz: `piper` ou `edge` | `piper` |
+| `tts_voice` | voz: arquivo `.onnx` (Piper) ou ShortName (Edge) | `pt_BR-cadu-medium.onnx` |
+| `continuous_listen_minutes` | minutos de escuta contínua após o wake word (`0` = infinito) | `5` |
+
+Como obter a chave: crie a conta em <https://console.groq.com>, gere a chave em
+<https://console.groq.com/keys> e cole na **engrenagem ⚙** das configurações do JARVIS (ou
+direto no `config.json`). Detalhes dos modelos e da voz em **"Chave da Groq"** e **"Voz
+(Piper e Edge TTS)"** abaixo.
+
+## Uso
+
+Com o backend (8000) e a UI (8755) no ar, abra `http://127.0.0.1:8755` — ou use o `.exe` /
+app Electron, que sobem tudo sozinhos. O que dá pra fazer:
+
+- **Chat** com streaming via Groq e agente com tool calling (engrenagem ⚙ para chave/modelo);
+- **Voz pt-BR**: dizer "Jarvis" acorda o assistente (escuta contínua configurável), com Piper
+  (voz local) ou Edge TTS (neural, precisa internet);
+- **3D**: globo do núcleo (5.000 partículas; arrasto gira, com inércia e zoom), visualizador
+  3D sob demanda ("me mostra um carro") e modo foco em tela cheia;
+- **Programar**: o modo programador gera código a partir do chat;
+- **Ferramentas reais** via backend: comandos, leitura de arquivos, clima, notícias,
+  agenda/lembretes, memória persistente e controle de energia (com confirmação);
+- **App desktop** (Electron) com janela própria e sem barra do sistema.
+
+## Segurança
+
+⚠️ **Uso local e pessoal.** O JARVIS executa ações reais na sua máquina:
+
+- **NÃO exponha as portas 8000/8755 na internet.** O CORS está restrito a
+  `127.0.0.1:8755`/`localhost:8755`, mas quem alcança a porta manda no app;
+- **`/exec`** roda comandos no shell e **`/power`** desliga/reinicia o PC — os dois têm
+  blacklist, confirmação e log, mas **não são um sandbox**: trate o modelo como não confiável;
+- a chave da Groq no `config.json` é **seu** segredo — não commite nem compartilhe o arquivo
+  (por isso ele está fora do versionamento).
+
+Blacklist, rate limits, handler global de erros e exemplos de log: em
+**[Segurança (detalhes técnicos)](#segurança-detalhes-técnicos)** e no
+**[SECURITY.md](SECURITY.md)**.
+
+## Licença
+
+**TBD — a definir.** O `electron/package.json` já declara `MIT`, mas a licença do repositório
+ainda não foi escolhida; um arquivo `LICENSE` na raiz é o próximo passo antes de abrir o
+projeto como open source.
+
 ## Arquivos
 
 ```
@@ -668,7 +793,7 @@ HTML/CSS** na v1.0.14. O backend continua entregando os mesmos dados (`/health`,
 desenhavam seguem no `app.js` com **guarda de elemento ausente** (`if (!el) return;`) e os
 itens de navegação correspondentes ficam **desabilitados** (opacidade 0.4, sem ação no clique).
 
-## Segurança
+## Segurança (detalhes técnicos)
 
 O JARVIS executa ações reais na máquina, então o modelo é tratado como **não confiável**
 e tudo passa por validação no backend. Resumo do que foi endurecido:
@@ -713,12 +838,6 @@ e tudo passa por validação no backend. Resumo do que foi endurecido:
 
 Detalhes completos, exemplos de log e as variáveis de ambiente para estender as proteções
 estão em **[SECURITY.md](SECURITY.md)**.
-
-## Requisitos
-
-- Windows 10/11
-- Para o `.exe`: nada além dos arquivos gerados
-- Para modo dev: Python 3.10+ (testado em 3.12) e Node.js 20+ (só se usar `server.js`)
 
 ## Mudanças recentes (v1.0.15)
 
