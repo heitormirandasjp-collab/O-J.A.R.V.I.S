@@ -839,7 +839,32 @@ e tudo passa por validação no backend. Resumo do que foi endurecido:
 Detalhes completos, exemplos de log e as variáveis de ambiente para estender as proteções
 estão em **[SECURITY.md](SECURITY.md)**.
 
-## Mudanças recentes (v1.0.15)
+## Mudanças recentes (v1.0.16)
+
+Preparação para open source — 4 itens de polimento:
+
+1. **Three.js local** — `public/vendor/three.min.js` (r128, 603 KB, licença MIT) baixado da
+   cdnjs e servido por `/vendor/three.min.js` (era `<script>` de CDN no `index.html`): sem
+   internet o globo 3D não cai mais no fallback 2D. O PyInstaller embute a pasta `public/`
+   inteira, então o vendor entra no `.exe` no próximo build.
+2. **Blacklist do `/exec` fechada** — novos padrões em `_EXEC_BLOCK_RE` (`backend/main.py`):
+   `powershell|pwsh` com `-e`/`-enc`/`-encodedcommand` (bypass por base64), `rd /s /q`,
+   `rmdir /s /q`, `Remove-Item … -Force` (mesmo sem `-Recurse`), `Format-Volume`, `Clear-Disk`,
+   `net stop` e `taskkill /F /IM` (em qualquer ordem dos flags). Regressão de **55 casos**
+   (26 antigas bloqueadas + 14 novas bloqueadas + 15 permitidas) sem nenhuma falha.
+   Limitação documentada: regex **não substitui sandbox**.
+3. **Exception handler global** — `@app.exception_handler(Exception)` em `backend/main.py` e
+   `app.py`: qualquer exceção não tratada vira **500 JSON**
+   `{"error": "internal_server_error", "detail": "<tipo>: <mensagem>"}` (sem stacktrace na
+   resposta) e é gravada no `security.log` com timestamp, método, path, tipo e mensagem.
+   Camada extra: `try/except` existentes intactos e `HTTPException` (404/403…) normal.
+   Verificado com `TestClient` nos dois apps (16/16 checks).
+4. **README completo** — seções novas no topo (**O que é o JARVIS**, **Arquitetura** com o
+   diagrama das portas 8755 → 8000 → serviços, **Requisitos**, **Instalação**, **Configuração**,
+   **Uso**, **Segurança** e **Licença**); o changelog e os detalhes técnicos seguem abaixo.
+   Licença ainda **TBD**.
+
+### Anteriores (v1.0.15)
 
 Em `public/app.js` — correção de dois erros de runtime do globo 3D (só aparecem em execução;
 o `node --check` não os enxerga):
