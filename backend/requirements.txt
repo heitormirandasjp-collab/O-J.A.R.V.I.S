@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+psutil
+requests
+piper-tts
+edge-tts

@@ -1,0 +1,35 @@
+{
+  "name": "jarvis-desktop",
+  "productName": "JARVIS",
+  "version": "1.0.0",
+  "description": "JARVIS Command Center — app desktop (Electron)",
+  "main": "main.js",
+  "author": "Comandante",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win",
+    "build:dir": "electron-builder --win --dir"
+  },
+  "devDependencies": {
+    "electron": "^32.2.5",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.jarvis.commandcenter",
+    "productName": "JARVIS",
+    "directories": { "output": "../dist-electron" },
+    "files": ["main.js", "preload.js", "package.json", "icon.png"],
+    "extraResources": [{ "from": "../dist/JARVIS", "to": "jarvis" }],
+    "win": {
+      "target": ["nsis"],
+      "icon": "icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

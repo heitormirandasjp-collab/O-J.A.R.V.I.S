@@ -1,0 +1,29 @@
+# Segredos — NUNCA commitar
+.env
+jarvis.env
+api groq jarvis.env
+config.json
+*.env
+*.key
+*.secret
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Node
+node_modules/
+
+# Build
+dist/
+dist-electron/
+dist-installer/
+build/
+
+# Logs e cache
+*.log
+exec_history.json
+security.log
+_test_real.wav
