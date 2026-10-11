@@ -212,6 +212,15 @@ _EXEC_BLOCK_RE = re.compile(
             r"\breg\s+delete\b", r"\btakeown\b", r"\bicacls\b.*/grant", r"\bnet\s+(user|localgroup)\b",
             r"\bsc\s+delete\b", r"\bschtasks\b.*/create", r"\bnetsh\s+firewall\b", r"\bwmic\b.*delete",
             r"\bRemove-Item\b.*-Recurse", r"\bmklink\b",
+            # v1.0.16 — furos fechados (auditoria): encoding do PowerShell, rd /s /q,
+            # Remove-Item -Force (mesmo sem -Recurse), Storage cmdlets, parar serviços,
+            # taskkill com força + nome de imagem
+            r"\b(?:powershell|pwsh)\b[^|\n]*\s-(?:e|enc|enco|encod|encode|encodedcommand)\b",
+            r"(?:rmdir|rd)\s+/s\s+/q\b",
+            r"\bRemove-Item\b.*-Force",
+            r"\bFormat-Volume\b", r"\bClear-Disk\b",
+            r"\bnet\s+stop\b",
+            r"\btaskkill\b(?=[^|\n]*/f)(?=[^|\n]*/im)",
         ]
     ),
     re.IGNORECASE,

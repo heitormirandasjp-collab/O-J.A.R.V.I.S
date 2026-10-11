@@ -675,6 +675,20 @@ e tudo passa por validação no backend. Resumo do que foi endurecido:
 
 - **`/exec`**: blacklist de comandos destrutivos/de sistema (403), timeout de **30 s**,
   saída limitada a **10 KB**, histórico em `exec_history.json`;
+- **`/exec` — furos fechados na v1.0.16**: além das regras antigas (`rm -rf`, `del /f`,
+  `format C:`, `diskpart`, `shutdown`, `poweroff`, `reboot`, `bcdedit`, `takeown`,
+  `reg delete`, `Remove-Item -Recurse`, `cipher /w:`, `vssadmin`, `wevtutil cl`,
+  `net user`/`net localgroup`, `icacls /grant`, `mklink`, `sc delete`, `schtasks /create`,
+  `netsh firewall`, `wmic … delete`, `dd if=`, `mkfs`/`fdisk` e fork bomb), a blacklist passou
+  a cobrir: **`powershell|pwsh` com `-e`/`-enc`/`-encodedcommand`** (bypass por base64),
+  **`rd /s /q`** e **`rmdir /s /q`**, **`Remove-Item … -Force`** (mesmo sem `-Recurse`),
+  **`Format-Volume`** e **`Clear-Disk`** (PowerShell Storage), **`net stop`** (parar
+  serviços) e **`taskkill /F /IM`** (em qualquer ordem dos flags). Teste de regressão: 55
+  casos (26 bloqueados antigos + 14 novos bloqueados + 15 permitidos como `dir`,
+  `python --version`, `powershell -Command …`) — todos corretos. ⚠️ **Limitação honesta**:
+  blacklist por regex **não substitui um sandbox real** — ainda passam, por exemplo,
+  `taskkill /F /PID …`, `rd /s` (sem `/q`) e `powershell -c` com
+  `[Convert]::FromBase64String` inline;
 - **`/read-file`**: bloqueio de arquivos sensíveis (`.key`, `.pem`, `SAM`, `/etc/shadow`,
   `.ssh`, `config.json`…), leitura restrita a **Documents/Downloads/Desktop** + pasta do app,
   máximo de **1 MB**;
