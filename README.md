@@ -144,11 +144,10 @@ app Electron, que sobem tudo sozinhos. O que dá pra fazer:
   3. envie `X-Jarvis-Token: <valor>` em cada chamada a `/exec` e `/power`.
   O template está em [`.env.example`](.env.example); o projeto **não** carrega `.env`
   automaticamente, a variável precisa estar no ambiente;
-- **a sessão que faz o proxy também precisa da env**: o `server.js` (que liga a UI ao
-  backend em `/exec` e `/power`) lê `JARVIS_EXEC_TOKEN` do **seu** ambiente e repassa o
-  header automaticamente — **sem a env no ambiente do `server.js`, a UI recebe 403** no
-  Shell e nos comandos de energia (o `app.py` ainda não repassa o header; use o `server.js`
-  ou chame o backend direto);
+- **a sessão que faz o proxy também precisa da env**: o `server.js` e o `app.py` (que ligam
+  a UI ao backend em `/exec` e `/power`) leem `JARVIS_EXEC_TOKEN` do **seu** ambiente e
+  repassam o header automaticamente — **sem a env no ambiente deles, a UI recebe 403** no
+  Shell e nos comandos de energia;
 - a chave da Groq no `config.json` é **seu** segredo — não commite nem compartilhe o arquivo
   (por isso ele está fora do versionamento);
 - **rotação da chave da Groq (v1.0.16)** — se a chave antiga foi exposta em conversas, logs

@@ -838,12 +838,17 @@ def detect_tool(text: str) -> dict[str, Any] | None:
 def _backend(method: str, path: str, body: dict | None = None, timeout: int = 20) -> dict | None:
     try:
         url = BACKEND_URL.rstrip("/") + path
+        # v1.0.16: /exec e /power exigem X-Jarvis-Token (= env JARVIS_EXEC_TOKEN).
+        # Sem a env na sessão do app.py, o header não é enviado e o backend
+        # responde 403 — que é o comportamento correto (deny-by-default).
+        token = (os.environ.get("JARVIS_EXEC_TOKEN") or "").strip()
+        headers = {"X-Jarvis-Token": token} if token else None
         if method == "POST":
-            r = requests.post(url, json=body or {}, timeout=timeout)
+            r = requests.post(url, json=body or {}, headers=headers, timeout=timeout)
         elif method == "DELETE":
-            r = requests.delete(url, timeout=timeout)
+            r = requests.delete(url, headers=headers, timeout=timeout)
         else:
-            r = requests.get(url, timeout=timeout)
+            r = requests.get(url, headers=headers, timeout=timeout)
         return r.json()
     except Exception:  # noqa: BLE001
         return None
