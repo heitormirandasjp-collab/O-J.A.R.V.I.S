@@ -135,7 +135,16 @@ app Electron, que sobem tudo sozinhos. O que dá pra fazer:
   O template está em [`.env.example`](.env.example); o projeto **não** carrega `.env`
   automaticamente, a variável precisa estar no ambiente;
 - a chave da Groq no `config.json` é **seu** segredo — não commite nem compartilhe o arquivo
-  (por isso ele está fora do versionamento).
+  (por isso ele está fora do versionamento);
+- **rotação da chave da Groq (v1.0.16)** — se a chave antiga foi exposta em conversas, logs
+  ou commits, **troque-a antes de publicar o repo** (a troca é manual, nada é automático):
+  1. gere uma nova chave em <https://console.groq.com/keys> — botão **Create API Key**; a
+     chave (começa com `gsk_`) aparece **uma única vez**, copie na hora;
+  2. revogue a antiga: na mesma página, **delete a chave antiga** — ela deixa de valer na
+     hora;
+  3. coloque a nova em `config.json` → campo **`groqKey`** (dev: na raiz do projeto;
+     `.exe`: `%APPDATA%\JARVIS\config.json`) — ou na engrenagem ⚙ das configurações do
+     JARVIS — e reinicie o backend.
 
 Blacklist, rate limits, handler global de erros e exemplos de log: em
 **[Segurança (detalhes técnicos)](#segurança-detalhes-técnicos)** e no
