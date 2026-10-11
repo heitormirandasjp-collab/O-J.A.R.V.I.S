@@ -166,9 +166,7 @@ Blacklist, rate limits, handler global de erros e exemplos de log: em
 
 ## Licença
 
-**TBD — a definir.** O `electron/package.json` já declara `MIT`, mas a licença do repositório
-ainda não foi escolhida; um arquivo `LICENSE` na raiz é o próximo passo antes de abrir o
-projeto como open source.
+Este projeto está licenciado sob a licença MIT — veja o arquivo [LICENSE](LICENSE) para detalhes.
 
 ## Arquivos
 
