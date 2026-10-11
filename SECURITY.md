@@ -268,3 +268,47 @@ e do modo programador.
 Para endurecer mais: trocar a blacklist do `/exec` por uma **whitelist** (só comandos
 conhecidos), rodar o backend em uma conta de usuário sem privilégios administrativos e
 assinar os `.exe` publicados.
+
+## 15. Autenticação de `/exec` e `/power` — `X-Jarvis-Token` (v1.0.16)
+
+`POST /exec` e `POST /power` agora têm **autenticação obrigatória**: a dependência
+`require_exec_token` (`backend/main.py`) roda **antes** de qualquer validação de corpo.
+
+| Regra | Comportamento |
+|---|---|
+| **Header obrigatório** | Cada chamada precisa enviar `X-Jarvis-Token: <valor>` igual à variável de ambiente `JARVIS_EXEC_TOKEN` (comparação em tempo constante via `secrets.compare_digest`) |
+| **Deny-by-default** | Sem `JARVIS_EXEC_TOKEN` configurada, **toda** chamada a `/exec` e `/power` recebe **HTTP 403** antes de chegar à rota — nada executa |
+| **Token ausente/errado** | Idem: **HTTP 403** com `{"detail": "<motivo>"}` (sem stacktrace) e registro `[auth] BLOQUEADO` no `security.log` |
+| **Escopo** | Somente `/exec` e `/power`; `/power/cancel` (só cancela um desligamento pendente) e as demais rotas seguem sem token |
+
+Os proxies da UI **repassam o header automaticamente**, lendo a env da própria sessão:
+
+- `server.js` — `backendCall()` inclui `X-Jarvis-Token` quando `process.env.JARVIS_EXEC_TOKEN` existe;
+- `app.py` — `_backend()` inclui o mesmo header a partir de `os.environ` (POST, GET e DELETE);
+- **sem a env na sessão do proxy, a UI recebe 403** no Shell e nos comandos de energia —
+  comportamento correto; basta definir a env e reiniciar a sessão.
+
+Gerar um token (32 bytes aleatórios, URL-safe):
+
+```bash
+python -c "import secrets;print(secrets.token_urlsafe(32))"
+```
+
+Definir (o projeto **não** carrega `.env` automaticamente — a variável precisa estar no
+ambiente; template em `.env.example`):
+
+```powershell
+# PowerShell (só esta janela)
+$env:JARVIS_EXEC_TOKEN="<valor>"
+# PowerShell (permanente — abra nova janela depois)
+setx JARVIS_EXEC_TOKEN "<valor>"
+```
+
+Chamada manual (o header faltando/errado devolve o 403):
+
+```bash
+curl -X POST http://127.0.0.1:8000/exec \
+  -H "Content-Type: application/json" \
+  -H "X-Jarvis-Token: <valor>" \
+  -d '{"cmd":"ipconfig"}'
+```
