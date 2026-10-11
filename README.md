@@ -702,7 +702,14 @@ e tudo passa por validação no backend. Resumo do que foi endurecido:
 - **CORS** restrito a `http://127.0.0.1:8755` / `http://localhost:8755` (nunca `*`) e headers
   `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`;
 - **logs**: `security.log` em `%APPDATA%\JARVIS\` com comandos, leituras, tentativas de
-  desligamento, bloqueios e uso do visualizador 3D.
+  desligamento, bloqueios e uso do visualizador 3D;
+- **erros inesperados (v1.0.16)**: `@app.exception_handler(Exception)` global em
+  `backend/main.py` e `app.py` — qualquer exceção não tratada vira **500 JSON**
+  `{"error": "internal_server_error", "detail": "<tipo>: <mensagem>"}` (sem stacktrace na
+  resposta) e é registrada no `security.log` com **timestamp, método, path, tipo e mensagem**
+  (ex.: `2026-10-11T17:50:40 [erro] POST /__boom -> 500 RuntimeError: boom de teste`). É
+  camada extra: os `try/except` existentes seguem intactos e `HTTPException` (404/403/…)
+  continua sendo tratado normalmente.
 
 Detalhes completos, exemplos de log e as variáveis de ambiente para estender as proteções
 estão em **[SECURITY.md](SECURITY.md)**.

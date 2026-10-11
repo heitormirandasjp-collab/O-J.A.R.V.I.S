@@ -37,7 +37,7 @@ from urllib.parse import quote, urlparse
 
 import psutil
 import requests
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -236,6 +236,21 @@ def _security_log(kind: str, detail: str, blocked: bool = False) -> None:
                 fh.write(line)
     except Exception:  # noqa: BLE001
         pass
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error(request: Request, exc: Exception) -> JSONResponse:
+    """Camada extra: qualquer exceção não tratada vira 500 JSON e vai para o security.log.
+
+    Não substitui os try/except existentes — só garante que nenhum 500 cru chegue ao front.
+    O stacktrace NUNCA é devolvido ao cliente; tipo + mensagem ficam só no log.
+    """
+    detail = str(exc).strip() or type(exc).__name__
+    _security_log(
+        "erro",
+        f"{request.method} {request.url.path} -> 500 {type(exc).__name__}: {detail}",
+    )
+    return JSONResponse({"error": "internal_server_error", "detail": detail}, status_code=500)
 
 
 def _append_exec_history(entry: dict[str, Any]) -> None:
