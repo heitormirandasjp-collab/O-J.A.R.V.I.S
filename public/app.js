@@ -370,9 +370,9 @@ function globeThree(c) {
     return ring;
   });
 
-  // Partículas ao redor (5000 pontos) com o buffer `position` guardando a POSIÇÃO DE
-  // REPOUSO (a esfera). A deformação elástica sai de um uniform e é calculada no
-  // vertexShader: nada de reescrever 15000 floats na CPU a cada frame.
+  // Partículas ao redor (5000 pontos): o buffer `position` guarda a POSIÇÃO DE REPOUSO
+  // (a esfera). Só o pulso (respiração) e a voz mexem no tamanho/brilho, calculados no
+  // vertexShader — nada de reescrever 15000 floats na CPU a cada frame.
   const N = 5000;
   const pos = new Float32Array(N * 3);
   const phase = new Float32Array(N);
@@ -478,26 +478,7 @@ function globeThree(c) {
   let lastInput = performance.now();
   host.style.cursor = 'grab';
 
-  /* ── estado do "slime": uma mola amortecida move o vetor de deformação ──
-     target = para onde o arrasto puxa · pos = deformação aplicada agora.
-     No pointerup o alvo volta a zero e `pos` retorna ao repouso com uma leve
-     oscilação (k = 0.15, amortecimento = 0.85), sem quicar para sempre. */
-  const JELLY_K = 0.15;        // força da mola
-  const JELLY_DAMP = 0.85;     // amortecimento por frame
-  const MAX_DEFORM = 1.15;     // teto da deformação (unidades de mundo)
-  const jelly = {
-    target: new THREE.Vector3(),
-    vel: new THREE.Vector3(),
-    pos: new THREE.Vector3(),
-  };
-  const tmpVec = new THREE.Vector3();
-  const shellDir = new THREE.Vector3();
-  const X_AXIS = new THREE.Vector3(1, 0, 0);
-  const Y_AXIS = new THREE.Vector3(0, 1, 0);
-
-  console.log('globo carregou', N, 'partículas (camada de elasticidade removida)');
-  window.__jarvisGlobeJelly = () => ({ partículas: N, dragging });
-  sw.style('color', 'rgba(160,235,255,0.65)');
+  console.log('globo carregou', N, 'partículas');
 
   host.addEventListener('pointerdown', (e) => {
     dragging = true;
@@ -509,7 +490,6 @@ function globeThree(c) {
   addEventListener('pointerup', () => {
     dragging = false;
     host.style.cursor = 'grab';
-    jelly.target.set(0, 0, 0);   // solta: a mola traz tudo de volta
   });
   addEventListener('pointermove', (e) => {
     if (!dragging) return;
@@ -521,13 +501,6 @@ function globeThree(c) {
     ly = e.clientY;
     group.rotation.y += vx;
     group.rotation.x = Math.max(-1.2, Math.min(1.2, group.rotation.x + vy));
-    // arrasto → deformação elástica: quanto MAIS RÁPIDO o gesto, mais estica
-    const speed = Math.min(30, Math.hypot(dx, dy));
-    const f = 0.010 + speed * 0.0026;
-    jelly.target.x += dx * f;
-    jelly.target.y += -dy * f;        // eixo Y da tela é invertido no 3D
-    jelly.target.z += speed * f * 0.25;   // leve inchaço de volume ao esticar
-    jelly.target.clampLength(0, MAX_DEFORM);
     lastInput = performance.now();
   });
   host.addEventListener('wheel', (e) => {
@@ -560,13 +533,6 @@ function globeThree(c) {
   (function loop(t) {
     t = t || 0;
     const level = audioLevel();   // 0..1: voz do usuário (mic) ou voz do JARVIS (TTS)
-
-    // mola: `pos` persegue `target` (arrasto) e volta a zero quando o mouse solta
-    tmpVec.copy(jelly.target).sub(jelly.pos).multiplyScalar(JELLY_K);
-    jelly.vel.add(tmpVec);
-    jelly.vel.multiplyScalar(JELLY_DAMP);
-    if (jelly.vel.lengthSq() > 0.12) jelly.vel.setLength(0.35);   // nunca explode
-    jelly.pos.add(jelly.vel);
 
     if (!dragging) {
       vx *= 0.95; // inércia: continua girando e desacelerando
@@ -616,19 +582,6 @@ function globeThree(c) {
     halo.material.color.copy(coreCol);
     wire.material.color.copy(coreCol).lerp(wireMix, 0.4);
 
-    // ── deformação elástica: o casco (malhas + anéis) estica na direção do arrasto ──
-    const dlen = jelly.pos.length();
-    if (dlen > 0.003) {
-      shellDir.copy(jelly.pos).normalize();
-      shell.quaternion.setFromUnitVectors(X_AXIS, shellDir);
-      shell.scale.set(1 + dlen * 0.22, 1 - dlen * 0.10, 1 - dlen * 0.10);
-      shell.position.copy(shellDir).multiplyScalar(dlen * 0.16);
-    } else {
-      shell.quaternion.identity();
-      shell.scale.set(1, 1, 1);
-      shell.position.set(0, 0, 0);
-    }
-
     // voz → ESCALA (pulso), BRILHO e OSCILAÇÃO das partículas
     group.scale.setScalar(1 + level * 0.3);
     // respiração do núcleo: independente do mouse (pulso próprio)
@@ -638,14 +591,11 @@ function globeThree(c) {
     core.material.opacity = 0.14 + level * 0.3 + boost;
     halo.material.opacity = 0.05 + level * 0.12 + boost * 0.5;
     wire.material.opacity = 0.3 + level * 0.45;
-    // as partículas recebem tudo por uniform: restPos + peso + mola, na GPU
+    // as partículas recebem pulso (respiração) e voz por uniform, na GPU
     uni.uTime.value = t * 0.001;
     uni.uVoice.value = level;
     uni.uSize.value = 0.028 + level * 0.03;
     uni.uOpacity.value = 0.85 * (0.75 + level * 0.5);
-    // a nuvem de partículas gira: compensa o giro para a deformação
-    // continuar apontando para o lado do arrasto na tela
-    uni.uDeform.value.copy(jelly.pos).applyAxisAngle(Y_AXIS, -points.rotation.y);
     renderer.render(scene, camera);
     requestAnimationFrame(loop);
   })(0);
@@ -678,6 +628,7 @@ function setCoreMode(mode, revertMs = 0) {
     }
   }
   const ctx = c.getContext('2d');
+  if (!ctx) return; // canvas já consumido pela WebGL (globo 3D falhou depois de iniciar): sem contexto 2D, o reserva nem começa (senão init/loop estourariam em ctx.* )
   let w, h, R, rot = 0;
   const sats = Array.from({ length: 5 }, (_, i) => ({ a: (i / 5) * 6.283, sp: 0.006 + i * 0.002, r: 1.35 + (i % 2) * 0.25 }));
 
