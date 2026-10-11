@@ -886,7 +886,7 @@ estão em **[SECURITY.md](SECURITY.md)**.
 
 ## Mudanças recentes (v1.0.16)
 
-Preparação para open source — 4 itens de polimento:
+Preparação para open source — 8 itens de polimento:
 
 1. **Three.js local** — `public/vendor/three.min.js` (r128, 603 KB, licença MIT) baixado da
    cdnjs e servido por `/vendor/three.min.js` (era `<script>` de CDN no `index.html`): sem
@@ -907,7 +907,22 @@ Preparação para open source — 4 itens de polimento:
 4. **README completo** — seções novas no topo (**O que é o JARVIS**, **Arquitetura** com o
    diagrama das portas 8755 → 8000 → serviços, **Requisitos**, **Instalação**, **Configuração**,
    **Uso**, **Segurança** e **Licença**); o changelog e os detalhes técnicos seguem abaixo.
-   Licença ainda **TBD**.
+5. **Autenticação obrigatória em `/exec` e `/power`** — `require_exec_token` (dependência
+   `Depends` em `backend/main.py`) exige o header `X-Jarvis-Token` igual à env
+   `JARVIS_EXEC_TOKEN` (comparação em tempo constante). Deny-by-default: sem a env, **403**
+   `{"detail": "<motivo>"}` antes de chegar à rota, com `[auth] BLOQUEADO` no `security.log`.
+   Template em `.env.example`; documentado na seção **Segurança** do README e no
+   `SECURITY.md` (seção 15). Verificado com `TestClient` (16/16 checks).
+6. **`server.js` e `app.py` repassam o token** — `backendCall()` e `_backend()` leem
+   `JARVIS_EXEC_TOKEN` da própria sessão e enviam `X-Jarvis-Token` automaticamente; sem a
+   env no ambiente do proxy, a UI recebe 403 no Shell e nos comandos de energia
+   (comportamento correto). Testes comportamentais das duas funções (8/8 checks cada).
+7. **`config.json.example` criado (template sem segredos)** — mesma estrutura do
+   `config.json` real com `groqKey` vazio, exceção `!config.json.example` no `.gitignore` e
+   instrução de cópia na seção **Configuração**; a rotação da chave Groq entrou na seção
+   **Segurança**.
+8. **LICENSE MIT** — arquivo `LICENSE` na raiz (`Copyright (c) 2026 Heitor Miranda`); a
+   seção **Licença** do README agora aponta para ele.
 
 ### Anteriores (v1.0.15)
 
