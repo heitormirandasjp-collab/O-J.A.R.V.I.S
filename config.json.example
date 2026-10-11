@@ -1,0 +1,7 @@
+{
+  "groqKey": "",
+  "groqModel": "",
+  "continuous_listen_minutes": 5,
+  "tts_engine": "piper",
+  "tts_voice": "pt_BR-cadu-medium.onnx"
+}

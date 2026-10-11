@@ -3,6 +3,7 @@
 jarvis.env
 api groq jarvis.env
 config.json
+!config.json.example
 *.env
 *.key
 *.secret

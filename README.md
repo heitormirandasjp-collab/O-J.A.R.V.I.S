@@ -90,6 +90,16 @@ Tudo fica em **`config.json`**, na raiz do projeto (no `.exe`, em
 | `tts_voice` | voz: arquivo `.onnx` (Piper) ou ShortName (Edge) | `pt_BR-cadu-medium.onnx` |
 | `continuous_listen_minutes` | minutos de escuta contínua após o wake word (`0` = infinito) | `5` |
 
+**Primeira vez (clone novo)**: copie o template versionado e preencha a chave:
+
+```bash
+cp config.json.example config.json   # Windows: copy config.json.example config.json
+```
+
+Depois cole a sua chave no campo **`groqKey`** do `config.json` novo. O
+`config.json` real está no `.gitignore` e **nunca** vai para o repositório — só este
+exemplo.
+
 Como obter a chave: crie a conta em <https://console.groq.com>, gere a chave em
 <https://console.groq.com/keys> e cole na **engrenagem ⚙** das configurações do JARVIS (ou
 direto no `config.json`). Detalhes dos modelos e da voz em **"Chave da Groq"** e **"Voz
