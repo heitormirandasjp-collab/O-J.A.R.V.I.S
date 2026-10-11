@@ -24,6 +24,25 @@ tmp_ret = collect_all('tokenizers')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 hiddenimports += collect_submodules('tqdm')
 
+# ── segredos NUNCA entram no build (v1.0.16) ─────────────────────────────
+# O JARVIS-Setup.exe é distribuído publicamente: o config.json (chave da Groq),
+# qualquer *.env e os logs/histórico locais ficam de fora mesmo que um add-data
+# de pasta inteira os puxe. Quem instalar cria o próprio config.json a partir
+# do config.json.example.
+_SENSITIVE_NAMES = {'config.json', 'security.log', 'exec_history.json'}
+
+
+def _is_sensitive(src):
+    s = str(src).replace('\\', '/').lower()
+    name = s.rsplit('/', 1)[-1]
+    return name in _SENSITIVE_NAMES or name.endswith('.env')
+
+
+datas = [d for d in datas if not _is_sensitive(d[0])]
+
+
+
+
 
 a = Analysis(
     ['launcher.py'],

@@ -150,6 +150,10 @@ app Electron, que sobem tudo sozinhos. O que dá pra fazer:
   Shell e nos comandos de energia;
 - a chave da Groq no `config.json` é **seu** segredo — não commite nem compartilhe o arquivo
   (por isso ele está fora do versionamento);
+- **o `config.json` NÃO vai no `.exe` nem no instalador**: o `JARVIS.spec` exclui do build
+  `config.json`, `*.env` (`jarvis.env`, `api groq jarvis.env`…), `security.log` e
+  `exec_history.json` — quem instalar cria o próprio a partir do
+  [`config.json.example`](config.json.example) e coloca a chave dele;
 - **rotação da chave da Groq (v1.0.16)** — se a chave antiga foi exposta em conversas, logs
   ou commits, **troque-a antes de publicar o repo** (a troca é manual, nada é automático):
   1. gere uma nova chave em <https://console.groq.com/keys> — botão **Create API Key**; a
