@@ -367,15 +367,21 @@ function backendCall(method, path, body, timeout = 8000) {
       return resolve(null);
     }
     const payload = body ? JSON.stringify(body) : null;
+    // v1.0.16: /exec e /power exigem X-Jarvis-Token (= env JARVIS_EXEC_TOKEN).
+    // Sem a env na sessão do server.js, o header não é enviado e o backend
+    // responde 403 — que é o comportamento correto (deny-by-default).
+    const headers = payload
+      ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+      : {};
+    const token = (process.env.JARVIS_EXEC_TOKEN || '').trim();
+    if (token) headers['X-Jarvis-Token'] = token;
     const req = http.request(
       {
         hostname: u.hostname,
         port: u.port || 80,
         path: u.pathname + u.search,
         method,
-        headers: payload
-          ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-          : {},
+        headers,
         timeout,
       },
       (r) => {
