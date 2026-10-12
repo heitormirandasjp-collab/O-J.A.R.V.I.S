@@ -61,6 +61,97 @@ def port_open(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+def _acquire_single_lock() -> bool:
+    """True se esta é a primeira instância do JARVIS (Windows: mutex nomeado).
+
+    O mutex fica aberto até o processo morrer (o SO libera sozinho — nada de
+    lock órfão). Rodar o `.exe` de novo com o app aberto NÃO deve abrir outra
+    janela: deve focar a existente.
+    """
+    if sys.platform != "win32":
+        return True  # projeto é Windows-only; sem trava aqui
+    import ctypes
+
+    ERROR_ALREADY_EXISTS = 183
+    # use_last_error=True + get_last_error(): forma confiável de ler o
+    # GetLastError sem corrida com as chamadas internas do próprio ctypes.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateMutexW(None, False, "JARVIS_Singleton_Mutex")
+    return ctypes.get_last_error() != ERROR_ALREADY_EXISTS
+
+
+def _focus_existing_window() -> bool:
+    """Traz para frente a janela do JARVIS (Edge --app ou Electron); True se achou.
+
+    A janela do app tem o título da página (`JARVIS — Command Center`). Consoles
+    (a janela preta do próprio `.exe`, incluindo o Windows Terminal) ficam de
+    fora: o foco é para a interface, não para o terminal.
+    """
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    # BOOL CALLBACK EnumWindows(HWND, LPARAM) — o wintypes deste Python não
+    # traz WNDENUMPROC, então o tipo do callback é montado aqui.
+    WNDENUMPROC = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+    )
+    # argtypes/restype explícitos: sem eles o ctypes converte HWND/param por
+    # padrão (c_int) e 64 bits pode estourar ou truncar.
+    user32.EnumWindows.argtypes = (WNDENUMPROC, wintypes.LPARAM)
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    user32.GetClassNameW.restype = ctypes.c_int
+    user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    user32.GetWindowTextW.restype = ctypes.c_int
+    user32.IsIconic.argtypes = (wintypes.HWND,)
+    user32.IsIconic.restype = wintypes.BOOL
+    user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+    user32.ShowWindow.restype = wintypes.BOOL
+    user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.BringWindowToTop.argtypes = (wintypes.HWND,)
+    user32.BringWindowToTop.restype = wintypes.BOOL
+    _EXCLUIR_CLASSES = {"ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"}
+    achados: list[int] = []
+
+    @WNDENUMPROC
+    def _enum(hwnd, _):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        classe = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, classe, 64)
+        if classe.value in _EXCLUIR_CLASSES:
+            return True
+        tam = user32.GetWindowTextLengthW(hwnd)
+        if tam <= 0:
+            return True
+        buf = ctypes.create_unicode_buffer(tam + 1)
+        user32.GetWindowTextW(hwnd, buf, tam + 1)
+        if buf.value.startswith("JARVIS"):
+            achados.append(hwnd)
+        return True
+
+    user32.EnumWindows(_enum, 0)
+    if not achados:
+        return False
+    hwnd = achados[0]
+    SW_RESTORE = 9
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, SW_RESTORE)
+    user32.SetForegroundWindow(hwnd)
+    user32.BringWindowToTop(hwnd)
+    return True
+
+
 def serve(app_obj, port: int, label: str) -> None:
     config = uvicorn.Config(app_obj, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
@@ -113,6 +204,29 @@ def main() -> int:
     print("=" * 58)
     print("  JARVIS — Command Center")
     print("=" * 58)
+
+    # ── instância única: segunda execução foca a janela existente ──────────
+    if not _acquire_single_lock():
+        url = f"http://127.0.0.1:{UI_PORT}"
+        if os.environ.get("JARVIS_NO_WINDOW") == "1":
+            # backend secundário (ex.: Electron): a instância dona do mutex já
+            # serve tudo — só confirmamos que a interface responde e saímos.
+            ok = wait_http(UI_PORT, "/")
+            print(f"\n  instância única já ativa — interface "
+                  f"{'OK' if ok else 'indisponível'} ({url})")
+            return 0
+        if _focus_existing_window():
+            print("\n  O JARVIS já está em execução — janela existente em foco.")
+            return 0
+        # instância viva mas sem janela (a anterior foi fechada com o console
+        # ainda no ar): reabre a interface apontando para os serviços dela.
+        if wait_http(UI_PORT, "/"):
+            open_window(url)
+            print(f"\n  O JARVIS já está em execução — nova janela em {url}")
+        else:
+            print(f"\n  O JARVIS já está em execução, mas a interface não "
+                  f"respondeu ({url}).")
+        return 0
 
     if port_open(TOOLS_PORT):
         print(f"  ferramentas/voz: já em execução na porta {TOOLS_PORT}")

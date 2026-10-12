@@ -201,9 +201,11 @@ No `.exe`, `config.json` e `agenda.json` ficam em `%APPDATA%\JARVIS\`.
 sobe os dois serviços (8000 e 8755), abre a janela do app e fica rodando. Para encerrar,
 feche a janela preta do console ou pressione Ctrl+C nela.
 
-Se o JARVIS já estiver rodando, rodar o `.exe` de novo só abre a janela apontando para a
-instância que já está no ar (não duplica serviços). Mantenha a pasta `JARVIS` inteira junto
-do `.exe` — o `_internal` faz parte do aplicativo.
+Se o JARVIS já estiver rodando, rodar o `.exe` de novo **não abre outra janela**: um
+mutex de instância única faz a nova execução **focar a janela já aberta** e sair. Se a
+janela foi fechada mas o console continua no ar, o `.exe` reabre a interface apontando para
+os serviços que já estão no ar (não duplica serviços). Mantenha a pasta `JARVIS` inteira
+junto do `.exe` — o `_internal` faz parte do aplicativo.
 
 Regenerar o executável (usa `JARVIS.spec`, que já inclui `public/`, `backend/main.py`,
 `backend/memory.py`, `system_prompt.txt`, `SECURITY.md` e o ChromaDB com o ONNX MiniLM —
@@ -811,9 +813,12 @@ npm run build              # gera o instalador em ../dist-electron/
 ```
 
 O `main.js` sobe os serviços reaproveitando o `dist/JARVIS/JARVIS.exe` em modo sem janela
-(`JARVIS_NO_WINDOW=1`), espera a interface responder na 8755 e só então abre a janela. Ao
-fechar a janela, todo o processo do backend é encerrado (`taskkill /T /F` na árvore). Links
-externos abrem no navegador padrão, nunca dentro do app.
+(`JARVIS_NO_WINDOW=1`), espera a interface responder na 8755 e só então abre a janela. O
+app é de **instância única** (`requestSingleInstanceLock`): um segundo atalho/exe aberto
+**não cria outra janela** — a primeira é restaurada e focada, e a segunda execução encerra
+(`electron/main.js`). Ao fechar a janela, todo o processo do backend é encerrado
+(`taskkill /T /F` na árvore). Links externos abrem no navegador padrão, nunca dentro do
+app.
 
 ## Só dados reais no HUD (enxuto desde a v1.0.14)
 
@@ -890,7 +895,7 @@ estão em **[SECURITY.md](SECURITY.md)**.
 
 ## Mudanças recentes (v1.0.16)
 
-Preparação para open source — 8 itens de polimento:
+Preparação para open source — 9 itens de polimento:
 
 1. **Three.js local** — `public/vendor/three.min.js` (r128, 603 KB, licença MIT) baixado da
    cdnjs e servido por `/vendor/three.min.js` (era `<script>` de CDN no `index.html`): sem
@@ -927,6 +932,17 @@ Preparação para open source — 8 itens de polimento:
    **Segurança**.
 8. **LICENSE MIT** — arquivo `LICENSE` na raiz (`Copyright (c) 2026 Heitor Miranda`); a
    seção **Licença** do README agora aponta para ele.
+9. **Fim das janelas múltiplas (instância única)** — o `JARVIS.exe` abria uma janela nova
+   **toda vez** que era executado (mesmo com o app aberto) e o Electron abria outra janela
+   + outro backend a cada atalho. Agora os dois têm trava: `launcher.py` usa um **mutex
+   nomeado** no Windows — a segunda execução **foca a janela existente** (via
+   `EnumWindows`/`SetForegroundWindow`, ignorando consoles e janelas ocultas) e encerra;
+   se a interface estiver no ar sem janela, reabre uma apontando para os serviços
+   existentes. O `electron/main.js` ganhou `requestSingleInstanceLock()` + handler
+   `second-instance` (restaura + foca). O wake word **não** foi mexido: ele nunca abriu
+   janela (o `openChat()` só é chamado por clique); o que o usuário via era o relançamento
+   do `.exe`. Verificado com testes de processo real (mutex 1º/2º/3º), enumeração de
+   janelas Win32 e integração do `main()` no ramo de segunda instância.
 
 ### Anteriores (v1.0.15)
 

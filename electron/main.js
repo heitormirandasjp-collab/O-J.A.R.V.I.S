@@ -20,6 +20,21 @@ const UI_URL = `http://127.0.0.1:${UI_PORT}`;
 let backend = null;
 let win = null;
 
+// ── instância única ─────────────────────────────────────────────────────────
+// Sem esta trava, cada atalho/exe aberto criava OUTRA janela (+ outro backend).
+// Quem não ganha o lock só traz a janela já aberta para frente e encerra.
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  });
+}
+
 /** Descobre como subir o backend: .exe empacotado, .exe local ou python do venv. */
 function backendCommand() {
   const root = path.join(__dirname, '..');
@@ -128,16 +143,18 @@ ipcMain.on('win:toggleMaximize', () => {
 });
 ipcMain.on('win:close', () => win && win.close());
 
-app.whenReady().then(async () => {
-  startBackend();
-  await waitForUI();
-  createWindow();
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-});
+if (gotTheLock) {
+  app.whenReady().then(async () => {
+    startBackend();
+    await waitForUI();
+    createWindow();
+    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  });
 
-app.on('window-all-closed', () => {
-  stopBackend();
-  if (process.platform !== 'darwin') app.quit();
-});
-app.on('before-quit', stopBackend);
-process.on('exit', stopBackend);
+  app.on('window-all-closed', () => {
+    stopBackend();
+    if (process.platform !== 'darwin') app.quit();
+  });
+  app.on('before-quit', stopBackend);
+  process.on('exit', stopBackend);
+}
