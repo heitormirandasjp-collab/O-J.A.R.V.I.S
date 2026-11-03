@@ -231,11 +231,117 @@ function chatRateLimited() {
   return false;
 }
 
+/* ── Modo AR: "Jarvis, me mostra um carro na mão" ─────────────────────── */
+// Diferente do visualizador 3D (que desenha na TELA), aqui a página /ar.html
+// abre no navegador com o modelo sobre a palma da mão (?modelo=<nome>).
+// Os nomes de AR_MODEL_ALIASES são os da própria página (MODEL_NAMES do public/ar.html).
+// detectARMode é uma função sem dependências: dá para extrair do arquivo e testar sozinha.
+function detectARMode(text) {
+  const AR_OBJECT_RE =
+    /\b(?:me\s+)?(?:mostra|mostre|mostrar|exibe|exiba|exibir|p[õo]e|po[õe]e|coloca|coloque|colocar|traz|traga|trazer|abre|abra|abrir|ver|visualiza|visualizar)\b\s+(?:umas|uma|uns|um|os|as|o|a|minhas|minha|meus|meu)?\s*([0-9a-zà-öø-ÿ][0-9a-zà-öø-ÿ\- ]{1,29}?)\s+(?:na|nas)\s+(?:minha\s+|minhas\s+|meu\s+)?m[ãa]o(?:s)?\b/i;
+  const AR_MODE_RE = /\bmodo\s+(?:ar|a\.?\s?r\.?)\b|\brealidade\s+aumentada\b|\bc[âa]mera\s+ar\b/i;
+  const AR_OPEN_RE =
+    /\b(?:ativa|ative|ativar|liga|ligue|ligar|abre|abra|abrir|entra|entre|entrar|inicia|inicie|iniciar)\b[^.?!,;]{0,18}\b(?:ar|a\.?\s?r\.?)\b/i;
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  const m = t.match(AR_OBJECT_RE);
+  if (m) {
+    const obj = m[1]
+      .replace(/\s+/g, ' ')
+      .replace(/^[\s.,!?:;\-—]+|[\s.,!?:;\-—]+$/g, '')
+      .toLowerCase()
+      // resto de artigo (o grupo acima é opcional: "uma espada" pode capturar "a espada")
+      .replace(/^(?:umas|uma|uns|um|os|as|o|a|minhas|minha|meus|meu)\s+/, '');
+    return { object: obj || null };
+  }
+  if (AR_MODE_RE.test(t) || AR_OPEN_RE.test(t)) return { object: null };
+  return null;
+}
+
+// objeto falado → modelo na página /ar.html (nomes = MODEL_NAMES do public/ar.html)
+const AR_MODEL_ALIASES = [
+  ['carro esportivo', 'hatchback-sports'],
+  ['carro de corrida', 'hatchback-sports'],
+  ['esportivo', 'hatchback-sports'],
+  ['hatchback', 'hatchback-sports'],
+  ['carro', 'sedan'],
+  ['sedan', 'sedan'],
+  ['automovel', 'sedan'],
+  ['veiculo', 'sedan'],
+  ['truck', 'truck'],
+  ['caminhao', 'truck'],
+  ['caminhonete', 'truck'],
+  ['picape', 'truck'],
+  ['furgao', 'van'],
+  ['van', 'van'],
+  ['kombi', 'van'],
+  ['personagem', 'character'],
+  ['robo', 'character'],
+  ['boneco', 'character'],
+  ['humano', 'character'],
+  ['espada', 'espada'],
+  ['adaga', 'espada'],
+  ['sabre', 'espada'],
+  ['arma', 'espada'],
+  ['escudo', 'escudo'],
+  ['shield', 'escudo'],
+  ['espaconave', 'nave'],
+  ['nave', 'nave'],
+  ['foguete', 'nave'],
+  ['astronauta', 'astronauta'],
+  ['arvore', 'arvore'],
+  ['planta', 'arvore'],
+  ['pinheiro', 'arvore'],
+  ['hamburger', 'hamburger'],
+  ['hamburguer', 'hamburger'], // grafia portuguesa
+  ['burger', 'hamburger'],
+  ['lanche', 'hamburger'],
+  ['comida', 'hamburger'],
+  ['sanduiche', 'hamburger'],
+];
+
+/** minúsculas e sem acento (para comparar nomes de modelo com segurança). */
+function arFold(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+/** Casa "carro" em "carro"/"carros"; alias curto (van, nave) exige palavra inteira. */
+function arAliasHit(alias, texto) {
+  const esc = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = alias.length <= 4 ? new RegExp(`\\b${esc}s?\\b`) : new RegExp(`\\b${esc}\\w{0,4}\\b`);
+  return re.test(texto);
+}
+
+/** Objeto falado → modelo da página. Sem acerto: null (a página abre no padrão).
+ *  O mapa local cobre o vocabulário comum; o /ar-models é a reserva para nomes fora dele. */
+async function arModeloDoObjeto(obj) {
+  if (!obj) return null;
+  const alvo = arFold(obj).trim();
+  if (!alvo) return null;
+  const candidatos = [alvo, ...alvo.split(' ').filter((p) => p && p !== alvo)];
+  for (const [chave, modelo] of AR_MODEL_ALIASES) {
+    if (candidatos.some((c) => arAliasHit(chave, c))) return modelo;
+  }
+  const lista = (await backendCall('GET', '/ar-models', null, 8000)) || {};
+  for (const item of lista.models || []) {
+    const nome = arFold(item && item.name).trim();
+    if (!nome) continue;
+    const partes = nome.split(/[^a-z0-9]+/).filter((p) => p.length >= 4);
+    if (nome.includes(alvo) || alvo.includes(nome)) return item.name;
+    if (partes.some((p) => candidatos.some((c) => c.length >= 4 && (p.includes(c) || c.includes(p)))))
+      return item.name;
+  }
+  return null;
+}
+
 /* ── visualizador 3D (intenção detectada aqui, sem depender do modelo) ── */
 const VIS3D_VERB_RE = /\b(me\s+mostra|mostrar|mostra|visualizar|visualiza|renderizar|renderiza|desenhar|desenha)\b/i;
 const VIS3D_MARK_RE = /\b(em\s+)?(3d|3-d)\b|\b(em\s+)?tr[êe]s\s+dimens[õo]es\b/i;
 const VIS3D_BLOCK_RE =
-  /not[ií]cias?|manchetes?|agenda|lembrete|cota[çc]|a[çc][õo]es?|d[óo]lar|euro|processo|cpu|mem[óo]ria|disco|sistema|clima|previs|horas?|data|arquivo|pasta|imagem|foto|painel|tela|tudo/i;
+  /not[ií]cias?|manchetes?|agenda|lembrete|cota[çc]|a[çc][õo]es?|d[óo]lar|euro|processo|cpu|mem[óo]ria|disco|sistema|clima|previs|horas?|data|arquivo|pasta|imagem|foto|painel|tela|tudo|na\s+(?:minha\s+|minhas\s+|meu\s+)?m[ãa]o/i;
 const VIS3D_STOP = new Set(['isso', 'isto', 'ele', 'ela', 'aquilo', 'um', 'uma', 'o', 'a']);
 
 function detectVisualize3D(text) {
@@ -1071,6 +1177,34 @@ async function handleChat(req, res) {
   // o prompt de personalidade é sempre o nosso (ignora o que o front mandar)
   const messages = incoming.filter((m) => m && m.role !== 'system').slice(-30);
   messages.unshift({ role: 'system', content: SYSTEM_PROMPT });
+
+  // Modo AR: "me mostra uma espada na mão" abre /ar.html?modelo=espada e responde
+  const arLastUser = [...messages].reverse().find((m) => m && m.role === 'user');
+  const arIntent = detectARMode(arLastUser ? arLastUser.content : '');
+  if (arIntent) {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+      ...securityHeaders(),
+    });
+    const arModel = await arModeloDoObjeto(arIntent.object);
+    const ar = await backendCall('POST', '/ar-open', { model: arModel }, 20000);
+    const ok = !!(ar && ar.ok);
+    sse(res, 'tool', {
+      name: 'ar-open',
+      ok,
+      summary: ok ? `${arModel || 'padrão'} → ${(ar && ar.url) || ''}` : `${arModel || 'padrão'} — falhou`,
+    });
+    const text = ok
+      ? ar.message || 'Abrindo o Modo AR, Comandante.'
+      : `Não consegui abrir o Modo AR, Comandante. ${(ar && ar.error) || 'o backend de ferramentas não respondeu.'}`;
+    sse(res, 'start', { provider: 'jarvis-ar', model: 'ar-open' });
+    for (let i = 0; i < text.length; i += 28) sse(res, 'delta', { t: text.slice(i, i + 28) });
+    sse(res, 'done', { provider: 'jarvis-ar', model: 'ar-open' });
+    res.end();
+    return;
+  }
 
   // visualizador 3D: "me mostra um carro" abre o navegador e responde com frase fixa
   const visLastUser = [...messages].reverse().find((m) => m && m.role === 'user');

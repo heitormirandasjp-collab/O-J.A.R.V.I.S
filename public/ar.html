@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JARVIS — MODO AR</title>
+<style>
+  :root {
+    --bg: #05070c;
+    --panel: rgba(10, 20, 36, 0.82);
+    --line: rgba(64, 180, 255, 0.22);
+    --line-hot: rgba(64, 200, 255, 0.55);
+    --cyan: #3fd0ff;
+    --blue: #4d8dff;
+    --amber: #ffb648;
+    --green: #3fffb0;
+    --red: #ff5f6d;
+    --text: #d7ecff;
+    --text-dim: #7f9dbd;
+    --mono: 'Share Tech Mono', Consolas, 'Courier New', monospace;
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+               font: 13px/1.5 var(--mono); overflow: hidden; }
+  #topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 12; display: flex; align-items: center;
+            gap: 14px; padding: 8px 12px; background: linear-gradient(180deg, rgba(5, 7, 12, 0.96), rgba(5, 7, 12, 0));
+            -webkit-app-region: drag; }
+  #voltar { -webkit-app-region: no-drag; padding: 6px 12px; border-radius: 9px; cursor: pointer;
+            background: linear-gradient(180deg, rgba(63, 208, 255, 0.12), rgba(63, 208, 255, 0.03));
+            border: 1px solid var(--line); color: var(--text); font: inherit; letter-spacing: 1px;
+            transition: all 0.25s ease; }
+  #voltar:hover { border-color: var(--line-hot); box-shadow: 0 0 18px rgba(63, 208, 255, 0.3); transform: translateY(-1px); }
+  #titulo { letter-spacing: 3px; color: var(--cyan); text-shadow: 0 0 14px rgba(63, 208, 255, 0.6); font-size: 13px; }
+  #titulo small { color: var(--text-dim); letter-spacing: 1px; text-shadow: none; }
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #view  { max-width: 100%; max-height: 100%; background: #000; }
+  /* Canvas do Three.js sobreposto ao vídeo: mesmo retângulo de #view (sincronizado por JS),
+     transparente e sem capturar cliques. z-index 1 = acima do 2D (0), abaixo do HUD (10). */
+  #gl    { position: fixed; z-index: 1; pointer-events: none; }
+  #hud   { position: fixed; bottom: 12px; left: 12px; padding: 10px 14px; z-index: 10; white-space: pre;
+           background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+           box-shadow: 0 0 30px rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px); }
+  #hud b { color: var(--cyan); letter-spacing: 1px; }
+  #teclas { position: fixed; bottom: 12px; right: 12px; z-index: 10; padding: 8px 12px; border-radius: 12px;
+            background: var(--panel); border: 1px solid var(--line); color: var(--text-dim); white-space: pre; }
+  #teclas b { color: var(--amber); }
+  .ok   { color: var(--green); }
+  .bad  { color: var(--red); }
+  .dim  { color: var(--text-dim); }   /* confiança abaixo do limite */
+  #err  { position: fixed; left: 12px; right: 12px; top: 48px; z-index: 11; padding: 10px 14px;
+          background: rgba(60, 6, 12, 0.9); border: 1px solid var(--red); border-radius: 12px;
+          color: #ffd5d5; white-space: pre-wrap; display: none; }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <button id="voltar">← Voltar</button>
+  <span id="titulo">JARVIS — MODO AR <small>webcam + mão + modelo 3D</small></span>
+</div>
+<div id="stage"><canvas id="view" width="640" height="480"></canvas></div>
+<canvas id="gl"></canvas>
+<div id="hud">
+<b>STATUS</b>
+Mão detectada: <span id="det">NÃO</span>
+FPS: <span id="fps">0</span>
+Câmera:      <span id="cam">iniciando…</span>
+MediaPipe:   <span id="mp">carregando…</span>
+Modelo:      <span id="mod">carregando…</span>
+Tamanho:     <span id="modkb">—</span>
+Modelo atual: <span id="cur">—</span> (<span id="tot">0</span> modelos)
+Gesto:       <span id="gest">—</span>
+Palma:       <span id="palm">—</span>
+Qualidade:   <span id="q">0</span>
+Confiança:   <span id="conf">—</span>%
+</div>
+<div id="teclas"><b>1-9/0/-</b> trocar modelo · <b>P</b> próximo · <b>Shift+P</b> anterior · <b>R</b> reset · <b>ESC</b> limpa
+<b>punho</b> esconde · mão aberta mostra · <b>verso da mão</b> esconde</div>
+<div id="err"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+"use strict";
+
+const state = { camera: "iniciando", mediapipe: "carregando", hand: false, landmarks: 0, fps: 0,
+                error: null, cameraLabel: "", model: "carregando", modelVisible: false,
+                currentModel: "—", gesture: "—", quality: 0, score: null, hideReason: null };
+window.__arStatus = state;
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("view");
+const ctx = canvas.getContext("2d");
+const video = document.createElement("video");
+video.playsInline = true;
+video.muted = true;
+video.autoplay = true;
+
+let stream = null;        // MediaStream da câmera (para parar no "← Voltar")
+let parado = false;       // true depois do "← Voltar": o loop para de alimentar o MediaPipe
+
+function fail(where, err) {
+  const msg = `${where}: ${(err && (err.message || err.name)) || err}`;
+  state.error = msg;
+  const box = $("err");
+  box.style.display = "block";
+  box.textContent = (box.textContent ? box.textContent + "\n" : "") + msg;
+  console.error(msg);
+}
+
+const CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],
+  [13,17],[17,18],[18,19],[19,20],
+  [0,17],
+];
+
+async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("getUserMedia indisponível neste contexto (precisa de https ou localhost)");
+  }
+
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cams = devices.filter(d => d.kind === "videoinput");
+  console.log("Câmeras encontradas:", cams.map(c => c.label || "(sem label)"));
+
+  const preferred = cams.find(c => c.label.includes("Source 2"))
+                 || cams.find(c => c.label.includes("DroidCam"))
+                 || cams[0];
+
+  console.log("Câmera escolhida:", preferred?.label || "padrão");
+  state.cameraLabel = preferred?.label || "padrão";
+
+  // Sem permissão concedida o enumerateDevices devolve label e deviceId vazios — um
+  // { exact: "" } é insatisfazível e derruba o boot com OverconstrainedError. Só pedimos
+  // o dispositivo quando existe id de verdade.
+  const hasRealId = !!(preferred && preferred.deviceId);
+  // 640x480 (não 1280x720): menos pixels para o MediaPipe por quadro = mais FPS efetivo
+  // (ideal, não exact — câmera que não suportar escolhe outra resolução)
+  const videoConstraints = hasRealId
+    ? { deviceId: { exact: preferred.deviceId }, width: { ideal: 640 }, height: { ideal: 480 } }
+    : { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } };
+  console.log("Constraints:", hasRealId ? ("deviceId " + preferred.deviceId.slice(0, 8) + "…") : "facingMode=user");
+  state.usedDeviceId = hasRealId;
+
+  const s = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+
+  video.srcObject = s;
+  await video.play();
+  await new Promise((res) => {
+    if (video.videoWidth) return res();
+    video.onloadedmetadata = () => res();
+  });
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+  return s;
+}
+
+let hands = null;
+
+function initHands() {
+  if (typeof Hands === "undefined") {
+    throw new Error("Hands (MediaPipe) não carregou — script CDN bloqueado ou offline");
+  }
+  hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+  // maxNumHands 1 (só uma mão é usada: metade do custo) e tracking 0.7 (corta detecção fraca
+  // que balança a mão). A detecção (aquisição) fica em 0.5 de propósito: subir essa derruba
+  // a facilidade de PEGAR a mão.
+  hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.7 });
+  hands.onResults(onResults);
+}
+
+// ── Three.js: modelos GLB do Kenney sobrepostos na mão ───────────────────────
+const MODEL_FILES = [
+  "models/sedan.glb",                    // Car Kit
+  "models/truck.glb",                    // Car Kit
+  "models/hatchback-sports.glb",         // Car Kit
+  "models/van.glb",                      // Car Kit
+  "models/blocky-chars/character-a.glb", // Blocky Characters
+  "models/dungeon/weapon-sword.glb",     // Mini Dungeon
+  "models/dungeon/shield-round.glb",     // Mini Dungeon
+  "models/space/craft_speederA.glb",     // Space Kit
+  "models/space/astronautA.glb",         // Space Kit
+  "models/nature/tree_default.glb",      // Nature Kit
+  "models/food/burger.glb",              // Food Kit
+];
+// teclas: 1-9 → 0..8, 0 → 10º, - → 11º, P → próximo, Shift+P → anterior
+const MODEL_NAMES = ["sedan", "truck", "hatchback-sports", "van", "character",
+                     "espada", "escudo", "nave", "astronauta", "arvore", "hamburger"];
+const MODEL_SCALE = 1.0;   // 1 unidade de mundo = 1 px de tela (câmera ortográfica)
+const OFFSET_UP   = 0.3;   // fração do tamanho da mão: sobe o modelo sobre a palma
+
+// suavização dos 21 pontos (EMA): fonte ÚNICA de posição — dos pontos e do modelo
+const POINT_KEEP = 0.6, POINT_NEW = 0.4;
+const SMOOTH_RESET_MS = 500;   // sem mão por tanto tempo → zera a suavização
+const LOST_GRACE_MS   = 200;   // perda curta: mantém o modelo visível, parado
+
+// validação de frame
+const MIN_HAND_SCORE = 0.7;      // confiança mínima (multiHandedness.score) do frame
+const MIN_WRIST_TO_PALM = 0.05;  // pulso (0) ↔ palma (9) menor que isso = ruído
+const MAX_FINGER_SEGMENT_RATIO = 0.6;   // segmento vizinho do mesmo dedo, RELATIVO ao span (0↔9)
+const MAX_FINGER_SEGMENT_MARGIN = 0.03; // folga ABSOLUTA no limite acima: o jitter do MediaPipe (≈4 px)
+                                        // é constante e não encolhe com a mão — sem ela, mão LONGE
+                                        // seria descartada só por ruído
+const FINGER_CHAINS = [[1,2],[2,3],[3,4],[5,6],[6,7],[7,8],[9,10],[10,11],[11,12],
+                       [13,14],[14,15],[15,16],[17,18],[18,19],[19,20]];
+const LOWCONF_HOLD_MS = 500;     // descartes seguidos por mais que isso = mão perdida
+
+// mão na borda: palma fora dessa faixa → esconde e não arrasta
+const PALM_MIN = 0.15, PALM_MAX = 0.85;
+
+// gestos ── palma vs VERSO: o MediaPipe é treinado com a palma visível, então quando vê o
+// verso ele "estima" a posição dos pontos e o modelo aparece no lugar errado. O produto
+// vetorial 2D entre (pulso→base do dedo médio) e (pulso→base do polegar) inverte de sinal
+// quando a mão gira da palma para o verso — e não muda quando a mão gira DENTRO do plano.
+//
+// O sinal NÃO é o mesmo nas duas mãos (esquerda e direita são imagens espelhadas), por isso a
+// decisão usa o label do MediaPipe (multiHandedness). Como o stream desta página NÃO é
+// espelhado, o label sai trocado em relação à anatomia (nota da própria doc do MediaPipe):
+//   label "Right" = mão ESQUERDA do usuário  → palma quando cross < 0
+//   label "Left"  = mão DIREITA do usuário   → palma quando cross > 0
+const PALM_LABEL_LEFT  = "Left";   // label do MediaPipe que corresponde à mão DIREITA do usuário
+const PALM_LABEL_RIGHT = "Right";  // label do MediaPipe que corresponde à mão ESQUERDA do usuário
+const PALM_MIN_SIN = 0.05;     // |seno do ângulo| abaixo disso = mão de perfil → não esconde
+                               // (normalizado: o cross cru encolhe com a distância, o seno não)
+
+// punho = DEDO DOBRADO (topológico): a ponta está mais perto do pulso do que a articulação PIP.
+// As duas distâncias saem do mesmo ponto (o pulso), então o critério não muda com o tamanho da
+// mão nem com a distância à câmera, e não depende da folga entre os dedos.
+const FINGER_PIPS = { 8: 6, 12: 10, 16: 14, 20: 18 };   // ponta do dedo → sua articulação PIP
+const FIST_FOLD_MARGIN = 1.0;  // dobrado = dist(ponta, pulso) < dist(PIP, pulso) × isso
+const FIST_MAX_RATIO = 0.42;   // fallback para punho MUITO compacto (folga dos dedos pequena):
+                               // pontas 8/12/16/20 a menos disso × span (pulso↔palma) do ponto 9.
+                               // RELATIVO de propósito: o absoluto (0,15) chamava de punho mão
+                               // aberta mais longe (span 0,114 → pontas 0,103 < 0,15)
+
+let renderer = null, scene3 = null, camera3 = null, holder = null;
+let glRect = { x: -1, y: -1, w: 0, h: 0 };   // último retângulo aplicado ao canvas 3D
+const loaded = [];                            // loaded[i] = { group, ok } — um por modelo
+const modelKB = [];                           // tamanho do arquivo de cada modelo, em KB
+let currentModel = 0;
+let sceneCleared = false;                     // tecla ESC
+let fistActive = false;
+let handStreak = 0;                           // quadros consecutivos com mão (indicador de qualidade)
+const smooth = { x: 0, y: 0, span: 0, active: false, lastSeen: 0 };
+const pts = { list: [], active: false };      // os 21 pontos suavizados (persistem entre frames)
+let lastHideReason = null;                    // log de ocultação: uma vez por transição
+let lowConfFrames = 0, badGeomFrames = 0;     // contadores agregados (sem spam no console)
+let lastFistRel = 0;                          // maior distância ponta↔palma ÷ span do último frame
+let lastFistDetalhe = null;                   // por que o último frame (não) foi punho — diagnóstico
+let backHandFrames = 0;                       // frames (aceitos) em que só o VERSO da mão apareceu
+let lastPalmDetalhe = null;                   // cross/seno do último frame aceito — diagnóstico
+let lastPalmLog = "";                         // log de debug só quando label/decisão mudam
+let descarteDesde = 0;                        // início da sequência atual de frames descartados
+const dist2d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+function syncGlRect() {
+  const gl = $("gl");
+  const r = canvas.getBoundingClientRect();      // retângulo exibido de #view (vídeo)
+  if (!r.width || !r.height) return;
+  const w = Math.round(r.width), h = Math.round(r.height);
+  if (w === glRect.w && h === glRect.h && Math.round(r.left) === glRect.x && Math.round(r.top) === glRect.y)
+    return;
+  glRect = { x: Math.round(r.left), y: Math.round(r.top), w, h };
+  gl.style.left = glRect.x + "px";
+  gl.style.top = glRect.y + "px";
+  gl.style.width = w + "px";
+  gl.style.height = h + "px";
+  renderer.setSize(w, h, false);                 // false: o CSS já foi definido acima
+  // câmera ORTOGRÁFICA: o volume visível é exatamente o retângulo do canvas em pixels
+  // → 1 unidade de mundo = 1 px de tela, sem distorção de perspectiva
+  camera3.left = -w / 2; camera3.right = w / 2;
+  camera3.top = h / 2;   camera3.bottom = -h / 2;
+  camera3.near = -10000; camera3.far = 10000;
+  camera3.updateProjectionMatrix();
+}
+
+function loadAllModels() {
+  MODEL_FILES.forEach((url, i) => {
+    const loader = new THREE.GLTFLoader();
+    loader.load(
+      url,
+      (gltf) => {
+        const box = new THREE.Box3().setFromObject(gltf.scene);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z) || 1;
+
+        const inner = new THREE.Group();
+        gltf.scene.position.sub(center);             // centraliza na origem
+        inner.add(gltf.scene);
+        inner.scale.setScalar(1 / maxDim);           // maior dimensão vira 1 unidade
+        // meias-extensões normalizadas (maior dimensão = 1) para clampar na tela
+        loaded[i] = { group: inner, ok: true,
+                      half: { x: Math.max(size.x, size.z) / maxDim / 2, y: size.y / maxDim / 2 } };
+
+        if (i === currentModel) applyModel(i);
+        console.log(`Modelo ${i + 1} (${MODEL_NAMES[i]}) carregado:`, url,
+                    "| maior dimensão", maxDim.toFixed(3), "|", modelKB[i] ?? "?", "KB");
+      },
+      undefined,
+      (err) => {
+        loaded[i] = { ok: false };
+        console.warn("Falha ao carregar modelo", url, err);
+        if (i === currentModel) updateModelHUD();
+      }
+    );
+
+    // tamanho em KB do arquivo (só exibição no HUD)
+    fetch(url, { method: "HEAD" })
+      .then((r) => Number(r.headers.get("content-length")))
+      .then((n) => {
+        if (!n) return;
+        modelKB[i] = Math.round(n / 1024);
+        if (i === currentModel) updateModelHUD();
+      })
+      .catch(() => {});
+  });
+}
+
+function applyModel(i) {
+  if (!holder) return;
+  while (holder.children.length) holder.remove(holder.children[0]);   // tira o que está na mão
+  const m = loaded[i];
+  if (m && m.group) holder.add(m.group);
+  updateModelHUD();
+}
+
+function updateModelHUD() {
+  const slot = loaded[currentModel];
+  const ok = !!(slot && slot.ok);
+  state.model = ok ? "ok" : (slot ? "erro" : "carregando");
+  state.currentModel = MODEL_NAMES[currentModel];
+  $("mod").textContent = ok ? "OK" : (state.model === "carregando" ? "carregando…" : "ERRO");
+  $("mod").className = ok ? "ok" : "bad";
+  $("tot").textContent = MODEL_FILES.length;
+  $("cur").textContent = MODEL_NAMES[currentModel] + (ok ? "" : " (indisponível)");
+  $("modkb").textContent = modelKB[currentModel] ? modelKB[currentModel] + " KB" : "—";
+}
+
+function selectModel(i) {
+  if (i < 0 || i >= MODEL_FILES.length) return;
+  currentModel = i;
+  sceneCleared = false;                        // escolher modelo traz a cena de volta
+  applyModel(i);
+  console.log("Modelo atual:", MODEL_NAMES[i], `(${i + 1}/${MODEL_FILES.length})`);
+}
+
+function resetState() {
+  smooth.active = false;                       // limpa a suavização
+  pts.active = false;
+  descarteDesde = 0;
+  fistActive = false;
+  state.gesture = "—";
+  $("gest").textContent = "—";
+  lastPalmDetalhe = null;
+  if ($("palm")) $("palm").textContent = "—";
+  if (holder) { holder.visible = false; state.modelVisible = false; }
+  selectModel(0);                              // volta ao sedan
+  console.log("R: estado resetado — suavização limpa, gestos zerados, modelo → sedan");
+}
+
+function render3D() {
+  requestAnimationFrame(render3D);
+  if (!renderer) return;
+  syncGlRect();
+  // rotação leve: 0.5 grau por quadro no eixo Y
+  if (holder.visible) holder.rotation.y += 0.5 * Math.PI / 180;
+  renderer.render(scene3, camera3);
+}
+
+function init3D() {
+  if (typeof THREE === "undefined") throw new Error("THREE não carregou do CDN");
+  if (typeof THREE.GLTFLoader === "undefined") throw new Error("GLTFLoader não carregou do CDN");
+
+  renderer = new THREE.WebGLRenderer({ canvas: $("gl"), alpha: true, antialias: true });
+  renderer.setClearColor(0x000000, 0);            // fundo transparente (alpha: true)
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
+
+  scene3 = new THREE.Scene();
+  camera3 = new THREE.OrthographicCamera(-1, 1, 1, -1, -10000, 10000);
+  camera3.position.set(0, 0, 0);
+  scene3.add(new THREE.AmbientLight(0xffffff, 0.85));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+  dir.position.set(1, 2, 3);
+  scene3.add(dir);
+
+  holder = new THREE.Group();
+  holder.visible = false;
+  scene3.add(holder);
+
+  window.__ar3d = { scene: scene3, camera: camera3, renderer, holder, glRect: () => glRect,
+                    loaded, modelKB, smooth, pts, current: () => currentModel,
+                    cleared: () => sceneCleared, gesture: () => state.gesture,
+                    hideReason: () => lastHideReason, score: () => state.score,
+                    counters: () => ({ lowConfFrames, badGeomFrames, backHandFrames }),
+                    palm: () => lastPalmDetalhe,
+                    fistRel: () => lastFistRel, fist: () => fistActive,
+                    fistDetalhe: () => lastFistDetalhe };
+
+  // teclas: 1-9/0/- troca direto, P próximo, Shift+P anterior, R reseta, ESC limpa a cena
+  window.addEventListener("keydown", (e) => {
+    const k = e.key;
+    let idx = -1;
+    if (k >= "1" && k <= "9") idx = Number(k) - 1;   // 1-9 → 1º..9º modelo
+    else if (k === "0") idx = 9;                     // 0   → 10º
+    else if (k === "-" || k === "_") idx = 10;       // -   → 11º
+
+    if (idx >= 0) {
+      selectModel(idx);
+    } else if (k === "p" || k === "P") {
+      const n = MODEL_FILES.length;
+      selectModel(e.shiftKey ? (currentModel - 1 + n) % n : (currentModel + 1) % n);
+    } else if (k === "r" || k === "R") {
+      resetState();
+    } else if (e.key === "Escape") {
+      sceneCleared = true;
+      if (holder) setModelVisible(false, "ESC (cena limpa)");
+      console.log("ESC: cena limpa (rastreamento continua)");
+    }
+  });
+
+  syncGlRect();
+  loadAllModels();
+  render3D();
+}
+
+// palma visível? produto vetorial 2D entre (pulso→dedo médio 9) e (pulso→polegar 1).
+// Vira o sinal quando a mão troca palma ↔ verso; devolve o seno (sem unidade) para que o
+// limiar não dependa da distância. Perto do zero (mão de perfil) = ambíguo → trata como palma.
+function palmaVisivel(hand, label) {
+  const v9 = { x: hand[9].x - hand[0].x, y: hand[9].y - hand[0].y };   // pulso → base do dedo médio
+  const v1 = { x: hand[1].x - hand[0].x, y: hand[1].y - hand[0].y };   // pulso → base do polegar
+  const cross = v9.x * v1.y - v9.y * v1.x;
+  const len = (Math.hypot(v9.x, v9.y) * Math.hypot(v1.x, v1.y)) || 1;
+  const sen = cross / len;                                             // = sen(ângulo entre os dois)
+  const perfil = Math.abs(sen) < PALM_MIN_SIN;                         // mão de perfil: ambíguo
+  let palma;
+  if (perfil) palma = true;                       // sem sinal claro → não esconde
+  else if (label === PALM_LABEL_RIGHT) palma = cross < 0;   // mão ESQUERDA do usuário
+  else if (label === PALM_LABEL_LEFT) palma = cross > 0;    // mão DIREITA do usuário
+  else palma = true;                              // sem label → assume palma (nunca esconde por engano)
+  lastPalmDetalhe = { label: label || null, cross: +cross.toFixed(4), sen: +sen.toFixed(3), perfil, palma };
+  // log de DEBUG (uma vez por transição, não por frame)
+  const agora = label + "|" + palma;
+  if (agora !== lastPalmLog) {
+    lastPalmLog = agora;
+    console.log("palma: label=" + (label || "(nenhum)") + " cross=" + cross.toFixed(4) +
+                " sen=" + sen.toFixed(3) + " perfil=" + perfil + " → palmaVisivel=" + palma);
+  }
+  return palma;
+}
+
+// dedo dobrado: ponta mais perto do pulso do que a PIP (mesmo critério para os 4 dedos)
+function dedoDobrado(hand, tip, pip) {
+  const wrist = hand[0];
+  return dist2d(hand[tip], wrist) < dist2d(hand[pip], wrist) * FIST_FOLD_MARGIN;
+}
+
+function handleGestures(hand) {
+  const palm = hand[9];
+  const span = dist2d(hand[0], hand[9]) || 1;   // tamanho da mão NESTE frame (0 nunca acontece: framePlausivel barra)
+  const tipsRel = [8, 12, 16, 20].map((i) => dist2d(hand[i], palm) / span);
+  // dobra de cada dedo = dist(ponta, pulso) ÷ dist(PIP, pulso); < FIST_FOLD_MARGIN = dobrado
+  const dobras = Object.entries(FINGER_PIPS).map(([tip, pip]) => dist2d(hand[tip], hand[0]) / dist2d(hand[pip], hand[0]));
+  const porDobra = dobras.every((d) => d < FIST_FOLD_MARGIN);
+  const porFolga = tipsRel.every((r) => r < FIST_MAX_RATIO);
+  const fist = porDobra || porFolga;
+  lastFistRel = Math.max(...tipsRel);           // diagnóstico: 0,42 punho ↔ 0,90 mão aberta
+  lastFistDetalhe = { dobras: dobras.map((d) => +d.toFixed(3)), porDobra, porFolga, foldMargin: FIST_FOLD_MARGIN };
+
+  // ciclar modelos é só teclado (P / Shift+P); não existe gesto de pinça
+  fistActive = fist;
+
+  const g = fist ? "punho" : "—";
+  if (state.gesture !== g) { state.gesture = g; $("gest").textContent = g; }
+}
+
+// ── validação de frame e posicionamento ─────────────────────────────────────
+function framePlausivel(h) {
+  if (!h || h.length !== 21) return false;
+  const span = dist2d(h[0], h[9]);                                    // tamanho da mão NESTE quadro
+  if (span <= MIN_WRIST_TO_PALM) return false;                        // pulso colado na palma = ruído (absoluto, de propósito)
+  for (const p of h) if (!(p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1)) return false;   // fora do quadro
+  for (const [a, b] of FINGER_CHAINS)
+    if (dist2d(h[a], h[b]) > MAX_FINGER_SEGMENT_RATIO * span + MAX_FINGER_SEGMENT_MARGIN) return false;   // dedo esticado demais = adivinhação
+  return true;
+}
+
+// palma fora da faixa central = mão na borda (posição não confiável)
+function maoNaBorda(p9) {
+  return p9.x < PALM_MIN || p9.x > PALM_MAX || p9.y < PALM_MIN || p9.y > PALM_MAX;
+}
+
+// log de ocultação com a causa, uma vez por transição (nunca por frame)
+function setModelVisible(visivel, motivo) {
+  if (!holder) return;
+  const mudou = holder.visible !== visivel;
+  holder.visible = visivel;
+  state.modelVisible = visivel;
+  if (visivel) {
+    if (mudou) console.log("modelo visível");
+    lastHideReason = null;
+  } else if (mudou || lastHideReason !== motivo) {
+    console.log("modelo oculto: " + motivo);
+    lastHideReason = motivo;
+    state.hideReason = motivo;
+  }
+}
+
+// o modelo nunca sai do canvas (posição clampada pelas meias-extensões normalizadas
+// que guardamos no load de cada modelo)
+function clampToCanvas(px, py, escala) {
+  const m = loaded[currentModel];
+  const hx = m && m.half ? m.half.x * escala : 0;
+  const hy = m && m.half ? m.half.y * escala : 0;
+  const limX = Math.max(0, glRect.w / 2 - hx);
+  const limY = Math.max(0, glRect.h / 2 - hy);
+  return [Math.min(Math.max(px, -limX), limX), Math.min(Math.max(py, -limY), limY)];
+}
+
+// posição/escala do modelo a partir dos 21 pontos JÁ suavizados
+function updateFromPoints() {
+  const W = glRect.w, H = glRect.h;
+  if (!W || !H || !pts.active) return;
+  const p9 = pts.list[9], p0 = pts.list[0];
+  smooth.x = p9.x * W;
+  smooth.y = p9.y * H;
+  smooth.span = Math.hypot((p9.x - p0.x) * W, (p9.y - p0.y) * H);   // mão perto = span grande
+
+  const escala = Math.max(smooth.span * MODEL_SCALE, 1);
+  const [px, py] = clampToCanvas(
+    smooth.x - W / 2,                                  // centro da tela = origem do mundo
+    -(smooth.y - H / 2) + smooth.span * OFFSET_UP,
+    escala
+  );
+  holder.position.set(px, py, 0);                      // o z do MediaPipe nunca entra aqui
+  holder.scale.setScalar(escala);
+}
+
+// grace period em 3 faixas
+function lostHandTick() {
+  const now = performance.now();
+  const perdidaMs = smooth.active ? now - smooth.lastSeen : Infinity;
+  if (perdidaMs <= LOST_GRACE_MS) return;              // 0-200 ms: mantém visível, parado
+  setModelVisible(false, "sem mão");                   // 200-500 ms: esconde, suavização fica
+  if (perdidaMs > SMOOTH_RESET_MS && (smooth.active || pts.active)) {
+    smooth.active = false;                             // >500 ms: esconde E zera
+    pts.active = false;
+    console.log("mão ausente > " + SMOOTH_RESET_MS + " ms — suavização dos 21 pontos zerada");
+  }
+}
+
+// desenha esqueleto + 21 pontos a partir de uma lista de landmarks normalizados
+function drawHand(list, w, h) {
+  const p = list.map((q) => ({ x: q.x * w, y: q.y * h }));
+
+  ctx.strokeStyle = "rgba(63, 208, 255, 0.85)";
+  ctx.lineWidth = 2;
+  for (const [a, b] of CONNECTIONS) {
+    if (!p[a] || !p[b]) continue;
+    ctx.beginPath();
+    ctx.moveTo(p[a].x, p[a].y);
+    ctx.lineTo(p[b].x, p[b].y);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "#ffb648";
+  ctx.strokeStyle = "#7a4d00";
+  ctx.lineWidth = 1;
+  for (const q of p) {
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+function onResults(results) {
+  const w = canvas.width, h = canvas.height;
+  const now = performance.now();
+
+  ctx.save();
+  ctx.clearRect(0, 0, w, h);
+  if (results.image) ctx.drawImage(results.image, 0, 0, w, h);
+  ctx.restore();
+
+  const lm = results.multiHandLandmarks || [];
+  const hs = results.multiHandedness && results.multiHandedness[0];
+  const score = hs && typeof hs.score === "number" ? hs.score : null;
+
+  state.hand = lm.length > 0;
+  state.landmarks = lm.length ? lm[0].length : 0;
+  $("det").textContent = state.hand ? "SIM" : "NÃO";
+  $("det").className = state.hand ? "ok" : "bad";
+
+  // ── validar o frame: confiança + geometria plausível ──
+  let aceito = false, motivo = null;
+  if (lm.length) {
+    if (score !== null && score < MIN_HAND_SCORE) {
+      motivo = "confiança baixa (" + Math.round(score * 100) + "%)"; lowConfFrames++;
+    } else if (!framePlausivel(lm[0])) {
+      motivo = "geometria implausível"; badGeomFrames++;
+    } else {
+      aceito = true;
+    }
+    if (aceito) descarteDesde = 0;
+    else {
+      if (!descarteDesde) descarteDesde = now;
+      const total = lowConfFrames + badGeomFrames;
+      if (total <= 3 || total % 30 === 0)
+        console.log("frame ignorado: " + motivo + " | descartes até agora: " + lowConfFrames +
+                    " por confiança, " + badGeomFrames + " por geometria");
+    }
+  } else {
+    descarteDesde = 0;
+  }
+
+  // confiança exibida = a do último frame VÁLIDO
+  if (aceito) {
+    state.score = score;
+    $("conf").textContent = score === null ? "—" : Math.round(score * 100);
+    $("conf").className = (score !== null && score < MIN_HAND_SCORE) ? "dim" : "ok";
+  }
+
+  // qualidade: quadros consecutivos com detecção de mão
+  handStreak = lm.length ? handStreak + 1 : 0;
+  const q = Math.min(100, handStreak * 5);
+  if (q !== state.quality) { state.quality = q; $("q").textContent = q; }
+
+  // ── EMA dos 21 pontos: alimenta os pontos DESENHADOS e o modelo ──
+  if (aceito) {
+    const raw = lm[0];
+    if (!pts.active) {
+      pts.list = raw.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+      pts.active = true;
+      console.log("suavização dos 21 pontos ancorada no frame cru");
+    } else {
+      for (let i = 0; i < raw.length; i++) {
+        const s = pts.list[i] || (pts.list[i] = { x: raw[i].x, y: raw[i].y, z: raw[i].z });
+        s.x = s.x * POINT_KEEP + raw[i].x * POINT_NEW;
+        s.y = s.y * POINT_KEEP + raw[i].y * POINT_NEW;
+        s.z = s.z * POINT_KEEP + raw[i].z * POINT_NEW;   // z: só por consistência, não posiciona nada
+      }
+    }
+    smooth.active = true;
+    smooth.lastSeen = now;
+  }
+
+  // ── palma ou verso (usa os pontos JÁ suavizados, como os gestos) ──
+  let palmaOk = null;
+  if (aceito) {
+    const rotulo = hs && hs.label ? hs.label : null;    // "Left"/"Right" (trocado: stream não espelhado)
+    palmaOk = palmaVisivel(pts.list, rotulo);
+    $("palm").textContent = (palmaOk ? "SIM" : "NÃO") + " [" + (rotulo || "?") + "]";
+    $("palm").className = palmaOk ? "ok" : "bad";
+  }
+
+  // pontos saem sempre do estado suavizado; num frame descartado eles ficam PARADOS
+  // (em vez de pular para um lugar errado) e somem se a mão saiu
+  if (pts.active && lm.length) drawHand(pts.list, w, h);
+
+  // ── modelo 3D na mão ──
+  if (holder) {
+    const slot = loaded[currentModel];
+    if (!(slot && slot.ok)) {
+      setModelVisible(false, "modelo não carregado");
+    } else if (aceito) {
+      handleGestures(pts.list);
+      if (maoNaBorda(pts.list[9])) {
+        if (pts.active) {
+          pts.active = false;                       // não arrastar do último ponto bom
+          smooth.active = false;
+          console.log("mão na borda — suavização zerada");
+        }
+        setModelVisible(false, "mão na borda");
+      } else if (!palmaOk) {
+        backHandFrames++;                             // verso da mão: os pontos estão chutados
+        setModelVisible(false, "verso da mão");
+      } else if (fistActive) {
+        setModelVisible(false, "punho");
+      } else if (sceneCleared) {
+        setModelVisible(false, "ESC (cena limpa)");
+      } else {
+        updateFromPoints();
+        setModelVisible(true);
+      }
+    } else if (lm.length) {
+      // frame descartado com mão ainda detectada: segura o último estado bom
+      if (descarteDesde && now - descarteDesde > LOWCONF_HOLD_MS) lostHandTick();
+      else if (fistActive) setModelVisible(false, "punho");
+      else if (sceneCleared) setModelVisible(false, "ESC (cena limpa)");
+    } else {
+      lostHandTick();
+      if (fistActive || state.gesture !== "—") {
+        fistActive = false;
+        state.gesture = "—";
+        $("gest").textContent = "—";
+      }
+    }
+  }
+}
+
+let frames = 0, lastFps = performance.now(), busy = false;
+
+async function loop() {
+  requestAnimationFrame(loop);
+
+  frames++;
+  const now = performance.now();
+  if (now - lastFps >= 500) {
+    state.fps = Math.round((frames * 1000) / (now - lastFps));
+    $("fps").textContent = state.fps;
+    frames = 0;
+    lastFps = now;
+  }
+
+  if (parado || !hands || busy || video.readyState < 2) return;
+  busy = true;
+  try {
+    await hands.send({ image: video });
+  } catch (e) {
+    fail("hands.send", e);
+  } finally {
+    busy = false;
+  }
+}
+
+// "← Voltar": desliga a câmera e tenta fechar a aba; se a aba não fechar (foi aberta pelo
+// usuário, não por script), volta para o HUD do JARVIS.
+function voltar() {
+  parado = true;
+  try { if (hands && hands.close) hands.close(); } catch (e) { /* ignora */ }
+  try { video.pause(); } catch (e) { /* ignora */ }
+  try { if (video.srcObject) video.srcObject.getTracks().forEach((t) => t.stop()); } catch (e) { /* ignora */ }
+  video.srcObject = null;
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+  console.log("AR encerrada: câmera desligada");
+  try { window.close(); } catch (e) { /* ignora */ }
+  setTimeout(() => { window.location.href = "/"; }, 400);   // só roda se a aba continuar aberta
+}
+$("voltar").addEventListener("click", voltar);
+window.__arVoltar = voltar;                                  // testável sem clicar
+
+// modelo inicial por URL: /ar.html?modelo=carro  ou  ?modelo=3  (1-based) ou ?modelo=hamburger
+// (é o gancho para o futuro "JARVIS, me mostra um carro na mão" abrir a AR já no modelo certo)
+function modeloDaURL() {
+  try {
+    const q = new URLSearchParams(window.location.search).get("modelo");
+    if (!q) return -1;
+    const s = String(q).trim().toLowerCase();
+    if (/^\d+$/.test(s)) { const i = Number(s) - 1; return i >= 0 && i < MODEL_FILES.length ? i : -1; }
+    const i = MODEL_NAMES.findIndex((n) => n.includes(s));
+    return i;
+  } catch (e) { return -1; }
+}
+
+(async function boot() {
+  try {
+    init3D();
+  } catch (e) {
+    state.model = "erro";
+    $("mod").textContent = "ERRO";
+    $("mod").className = "bad";
+    fail("Three.js", e);
+  }
+
+  const inicial = modeloDaURL();
+  if (inicial >= 0) {
+    if (!holder) window.__arModeloInicial = inicial;   // init3D falhou: aplica quando der
+    else selectModel(inicial);
+  }
+
+  try {
+    stream = await startCamera();
+    state.camera = "ok";
+    $("cam").textContent = "OK";
+    $("cam").className = "ok";
+  } catch (e) {
+    state.camera = "erro";
+    $("cam").textContent = "ERRO";
+    $("cam").className = "bad";
+    fail("câmera", e);
+  }
+
+  try {
+    initHands();
+    await hands.initialize();
+    state.mediapipe = "ok";
+    $("mp").textContent = "OK";
+    $("mp").className = "ok";
+  } catch (e) {
+    state.mediapipe = "erro";
+    $("mp").textContent = "ERRO";
+    $("mp").className = "bad";
+    fail("MediaPipe", e);
+  }
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
