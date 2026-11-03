@@ -3,4 +3,9 @@ uvicorn
 psutil
 requests
 piper-tts
-edge-tts
+# edge-tts < 7.3.0 usa speech.platform.bing.com, desativado pela Microsoft (HTTP 403).
+# O fix (rany2/edge-tts#490) saiu na 7.3.0; o teto evita quebras de API numa major futura.
+edge-tts>=7.3.0,<8
+# clima: cidade por IP (sem chave) e cidade → lat/lon uma única vez, ao salvar
+whereismyip
+geopy

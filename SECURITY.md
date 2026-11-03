@@ -76,6 +76,14 @@ set JARVIS_READ_ROOTS=D:\Projetos;E:\Docs
   exista de verdade na pasta de vozes. Nenhum caminho de arquivo vem do cliente.
 - A voz/engine escolhidos também são validados em `app.py` (`clamp_tts_engine`/`clamp_tts_voice`)
   antes de ir para o `config.json`, então um valor do front nunca vira caminho nem comando.
+- **Versão mínima do Edge TTS** (`v1.0.19`): `edge-tts>=7.3.0` no `requirements.txt`. As
+  versões 7.2.x apontavam para `speech.platform.bing.com`, host desativado pela Microsoft —
+  o `/tts` respondia **403** e o JARVIS caía para o Piper. Não é falha de rede nem de
+  credencial: é a biblioteca dentro do `.exe`, que precisa ser **regerado** após o upgrade.
+- **Voz do Piper no build** (`v1.0.19`): só o `.onnx` **com o `.onnx.json` ao lado** é aceito
+  como voz (o último recurso do `find_model()` ignorava isso e podia escolher
+  `onnxruntime/datasets/logreg_iris.onnx`, um dataset de teste). Nenhum caminho de modelo
+  vem do cliente.
 
 ## 5. Chat / LLM — `POST /api/chat` (`app.py` e `server.js`)
 
@@ -166,6 +174,19 @@ e do modo programador.
 - Servidor de arquivos estáticos (`app.py`) impede path traversal (`target` precisa estar
   dentro de `public/`).
 - O executável só escuta em `127.0.0.1`; nada é exposto na rede local.
+- **Clima (`v1.0.19`)** — `GET /weather` e `GET/POST /weather/location`:
+  - a cidade vem do `config.json`; sem ela, a **geolocalização por IP** (`whereismyip`) roda
+    numa thread com **prazo de 2 s** — o endpoint nunca fica pendurado na rede;
+  - o `POST /weather/location` só escreve as chaves `weather_city`/`weather_lat`/`weather_lon`/
+    `weather_source` (nada de caminho, comando ou chave de API vindo do cliente), com
+    `chmod 0600` igual ao resto do `config.json`; a cidade é limitada a 80 caracteres e o
+    lat/lon vem do Nominatim, validado em faixa (`-90..90`, `-180..180`);
+  - o Nominatim (geopy) é consultado **uma vez**, ao salvar — nunca a cada request de clima
+    (rate limit do OSM) e só com a cidade que o usuário digitou;
+  - **privacidade**: o `security.log` registra só a cidade pública e a origem
+    (`cidade=..., origem=...`) — **lat/lon nunca** são logados;
+  - sem localização nenhuma, o `/weather` responde `needs_city` e o JARVIS **pergunta** a
+    cidade em vez de mostrar a de outra pessoa.
 
 ## 11. Memória persistente (`/memory`, `backend/memory.py`)
 

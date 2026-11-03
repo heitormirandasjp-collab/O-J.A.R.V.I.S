@@ -3,5 +3,9 @@
   "groqModel": "",
   "continuous_listen_minutes": 5,
   "tts_engine": "piper",
-  "tts_voice": "pt_BR-cadu-medium.onnx"
+  "tts_voice": "pt_BR-cadu-medium.onnx",
+  "weather_city": "",
+  "weather_lat": null,
+  "weather_lon": null,
+  "weather_source": ""
 }

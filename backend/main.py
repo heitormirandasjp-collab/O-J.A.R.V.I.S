@@ -27,6 +27,7 @@ import sys
 import threading
 import tempfile
 import time
+import unicodedata
 import uuid
 import wave
 import webbrowser
@@ -59,10 +60,27 @@ def _app_dir() -> Path:
 _VOICE_FILES = (MODEL_NAME, "pt_BR-faber-medium.onnx", "pt_BR-cadu-medium.onnx")
 
 
+def _bundle_dirs() -> list[Path]:
+    """Pastas internas do .exe (PyInstaller) onde os dados empacotados caem.
+
+    No onedir do PyInstaller 6, `voices/` vai para `_internal/voices` (= `sys._MEIPASS`/
+    `voices`). Sem estas pastas o Piper não acha o .onnx e o /voices responde vazio no
+    `.exe`, mesmo com o modelo empacotado.
+    """
+    if not getattr(sys, "frozen", False):
+        return []
+    out: list[Path] = []
+    meipass = str(getattr(sys, "_MEIPASS", "") or "")
+    if meipass:
+        out += [Path(meipass), Path(meipass) / "voices"]
+    out += [_app_dir() / "_internal", _app_dir() / "_internal" / "voices"]
+    return out
+
+
 def _voice_dirs() -> list[Path]:
     """Pastas onde procurar a voz: projeto, pasta do exe e até 4 níveis acima dele."""
     exe = _app_dir()
-    dirs: list[Path] = [VOICES_DIR, PROJECT_ROOT, exe, exe / "voices"]
+    dirs: list[Path] = [VOICES_DIR, PROJECT_ROOT, exe, exe / "voices", *_bundle_dirs()]
     up = exe
     for _ in range(4):
         up = up.parent
@@ -138,9 +156,18 @@ def find_model() -> Path | None:
     voices = list_voices()
     if voices:
         return voices[0]
-    for hit in PROJECT_ROOT.glob("**/*.onnx"):
-        if hit.is_file() and not hit.name.endswith(".json"):
-            return hit
+    # Último recurso: qualquer .onnx que seja de fato uma voz Piper — ou seja, com o
+    # `.onnx.json` de configuração ao lado. Sem esse filtro o glob encontrava o
+    # `onnxruntime/datasets/logreg_iris.onnx` (dataset de teste do onnxruntime, sem json)
+    # e o Piper morria com "logreg_iris.onnx.json" em vez de usar a voz.
+    for base in (*_bundle_dirs(), PROJECT_ROOT):
+        for hit in base.glob("**/*.onnx"):
+            if (
+                hit.is_file()
+                and not hit.name.endswith(".json")
+                and hit.with_suffix(".onnx.json").is_file()
+            ):
+                return hit
     return None
 
 
@@ -529,7 +556,12 @@ def _load_voice(path: Path | None):
         from piper import PiperVoice  # type: ignore
 
         cfg = path.with_suffix(".onnx.json")
-        voice = PiperVoice.load(str(path), config_path=str(cfg) if cfg.is_file() else None)
+        if not cfg.is_file():
+            # erro claro em vez do FileNotFoundError cru do Piper (sintoma que aparecia
+            # no .exe: "falha ao encontrar o arquivo ...logreg_iris.onnx.json")
+            _voice_errors[key] = f"falta a configuração {cfg.name} ao lado de {path.name}"
+            return None
+        voice = PiperVoice.load(str(path), config_path=str(cfg))
         _voices[key] = voice
         return voice
     except Exception as exc:  # noqa: BLE001
@@ -1614,17 +1646,138 @@ def news_brasil(
     return {"ok": True, "source": src, "topic": tpc, "count": len(items), "feed": url, "items": items}
 
 
-# ── 9a. clima (/weather) — São João do Paraíso - MG ─────────────────────
+# ── 9a. clima (/weather) ────────────────────────────────────────────────
+# A cidade NÃO é fixa: vem do config.json (weather_city / weather_lat / weather_lon).
+# Ordem: config (manual ou escrito à mão) → geolocalização por IP → nada. Os valores
+# abaixo são o padrão histórico, usados no config.json de quem já usava o app (para o
+# clima não quebrar). Sem configuração E sem IP, o /weather NÃO mostra a cidade de
+# outra pessoa: devolve `needs_city` e o JARVIS pergunta a do Comandante.
 WEATHER_CITY = "São João do Paraíso"
 WEATHER_LAT = -15.377
 WEATHER_LON = -42.006
-WEATHER_WTTR_URL = "https://wttr.in/Sao+Joao+do+Paraiso?format=j1&lang=pt"
+WEATHER_IP_TIMEOUT = 2.0          # a geolocalização por IP nunca segura o /weather
+WEATHER_WTTR_URL = "https://wttr.in/{place}?format=j1&lang=pt"
 WEATHER_OPEN_METEO_URL = (
     "https://api.open-meteo.com/v1/forecast"
-    f"?latitude={WEATHER_LAT}&longitude={WEATHER_LON}"
+    "?latitude={lat}&longitude={lon}"
     "&current=temperature_2m,relative_humidity_2m,weather_code,apparent_temperature,wind_speed_10m,wind_direction_10m"
     "&daily=temperature_2m_max,temperature_2m_min&timezone=America/Sao_Paulo"
 )
+
+
+def _config_file() -> Path:
+    """O MESMO config.json do app.py: jarvis/ no dev, %APPDATA%\\JARVIS no .exe."""
+    return _data_dir() / "config.json"
+
+
+def _read_config() -> dict[str, Any]:
+    """Lê o config.json inteiro (nunca falha: ausente ou corrompido → {})."""
+    try:
+        data = json.loads(_config_file().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _write_config(data: dict[str, Any]) -> None:
+    """Grava preservando as outras chaves, com a MESMA regra do app.py: escrita
+    atômica (tmp + replace) e permissão 0600 (só o usuário lê/escreve)."""
+    path = _config_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _num(value: Any) -> float | None:
+    """float ou None (aceita '−15.3', 15, "" e lixo sem estourar)."""
+    try:
+        out = float(str(value).replace(",", ".").strip()) if isinstance(value, str) else float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out == out else None  # NaN fora
+
+
+def _valid_latlon(lat: float | None, lon: float | None) -> bool:
+    return lat is not None and lon is not None and -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
+
+
+_IP_CACHE: dict[str, Any] = {"at": 0.0, "value": None, "ok": False}
+
+
+def _ip_lookup() -> dict[str, Any] | None:
+    """IP público → cidade aproximada (whereismyip, sem chave de API)."""
+    try:
+        r = requests.get("https://api.ipify.org", headers=UA, timeout=WEATHER_IP_TIMEOUT)
+        r.raise_for_status()
+        ip = r.text.strip()
+        if not re.fullmatch(r"[0-9a-fA-F:.]{3,45}", ip):
+            return None
+        import whereismyip  # type: ignore
+
+        data = whereismyip.whereismyip_dict(
+            ip_address=ip, timeout=WEATHER_IP_TIMEOUT, attempts=1, cache_ttl=3600
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    lat, lon = _num(data.get("latitude")), _num(data.get("longitude"))
+    if not _valid_latlon(lat, lon):
+        return None
+    city = str(data.get("city") or "").strip()
+    region = str(data.get("region") or "").strip()
+    label = ", ".join(p for p in (city, region) if p) or str(data.get("country") or "").strip()
+    return {"city": label[:80], "lat": float(lat), "lon": float(lon), "source": "ip"}
+
+
+def _weather_from_ip(timeout: float = WEATHER_IP_TIMEOUT) -> dict[str, Any] | None:
+    """Geolocalização por IP com PRAZO (2 s): estourou, o /weather segue sem ela.
+
+    Sucesso fica 30 min em cache (é uma chamada externa). Falha NÃO fica em cache: o
+    primeiro /weather logo após abrir o `.exe` pode esbarrar no import do whereismyip e
+    na rede fria — a próxima tentativa (que também espera no máximo 2 s) resolve.
+    """
+    if _IP_CACHE["ok"] and time.time() - float(_IP_CACHE["at"] or 0) < 1800:
+        return _IP_CACHE["value"]
+
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            box["value"] = _ip_lookup()
+        except Exception:  # noqa: BLE001
+            box["value"] = None
+
+    worker = threading.Thread(target=_run, daemon=True, name="jarvis-weather-ip")
+    worker.start()
+    worker.join(timeout)          # prazo duro: não bloqueia o endpoint
+    value = box.get("value")
+    if value:
+        _IP_CACHE.update({"at": time.time(), "value": value, "ok": True})
+    return value
+
+
+def _weather_location() -> dict[str, Any]:
+    """Onde é o clima: config.json → IP → nada.
+
+    `location_source`: "manual" (salvo nas configurações), "config" (lat/lon escritos
+    no arquivo), "ip" (detectado agora) ou "none" (precisa perguntar a cidade).
+    """
+    cfg = _read_config()
+    city = str(cfg.get("weather_city") or "").strip()[:80]
+    lat, lon = _num(cfg.get("weather_lat")), _num(cfg.get("weather_lon"))
+    if _valid_latlon(lat, lon):
+        source = "manual" if str(cfg.get("weather_source") or "").lower() == "manual" else "config"
+        # sem nome salvo (só lat/lon à mão) a cidade fica vazia: melhor não nomear do que
+        # batizar as coordenadas com a cidade padrão de outra pessoa
+        return {"city": city, "lat": float(lat), "lon": float(lon), "source": source}
+    found = _weather_from_ip()
+    if found:
+        return found
+    return {"city": "", "lat": None, "lon": None, "source": "none"}
 # códigos WMO (open-meteo) → descrição em português
 WEATHER_WMO = {
     0: "Céu limpo", 1: "Principalmente limpo", 2: "Parcialmente nublado", 3: "Nublado",
@@ -1658,11 +1811,13 @@ def _wind_dir_pt(degrees: Any) -> str:
     return _CARDINAL_PT[int((deg % 360) / 22.5 + 0.5) % 16]
 
 
-def _weather_from_wttr() -> dict[str, Any] | None:
+def _weather_from_wttr(loc: dict[str, Any]) -> dict[str, Any] | None:
     """Reserva: wttr.in (grátis, sem chave). Atrasa 1-3 h (World Weather Online),
     por isso só entra quando o open-meteo falha."""
+    place = str(loc.get("city") or "").strip() or f"{loc.get('lat')},{loc.get('lon')}"
     try:
-        r = requests.get(WEATHER_WTTR_URL, headers={**UA, "Accept-Language": "pt-BR,pt"}, timeout=15)
+        url = WEATHER_WTTR_URL.format(place=quote(place, safe=""))
+        r = requests.get(url, headers={**UA, "Accept-Language": "pt-BR,pt"}, timeout=15)
         r.raise_for_status()
         data = r.json()
         cur = (data.get("current_condition") or [{}])[0]
@@ -1674,7 +1829,7 @@ def _weather_from_wttr() -> dict[str, Any] | None:
             desc = str(descs[0].get("value") or "").strip()
         return {
             "ok": True,
-            "cidade": WEATHER_CITY,
+            "cidade": str(loc.get("city") or ""),
             "temp": _weather_int(cur.get("temp_C")),
             "sensacao": _weather_int(cur.get("FeelsLikeC")),
             "descricao": desc,
@@ -1689,11 +1844,14 @@ def _weather_from_wttr() -> dict[str, Any] | None:
         return None
 
 
-def _weather_from_open_meteo() -> dict[str, Any] | None:
+def _weather_from_open_meteo(loc: dict[str, Any]) -> dict[str, Any] | None:
     """Clima real do open-meteo (grátis, sem chave). É a fonte PRIMÁRIA: atualiza
     a cada ~10-15 min, contra 1-3 h do wttr.in."""
+    url = WEATHER_OPEN_METEO_URL.format(
+        lat=round(float(loc.get("lat") or 0.0), 4), lon=round(float(loc.get("lon") or 0.0), 4)
+    )
     try:
-        r = requests.get(WEATHER_OPEN_METEO_URL, headers=UA, timeout=15)
+        r = requests.get(url, headers=UA, timeout=15)
         r.raise_for_status()
         data = r.json()
         cur = data.get("current") or {}
@@ -1708,7 +1866,7 @@ def _weather_from_open_meteo() -> dict[str, Any] | None:
             speed = 0
         return {
             "ok": True,
-            "cidade": WEATHER_CITY,
+            "cidade": str(loc.get("city") or ""),
             "temp": _weather_int(cur.get("temperature_2m")),
             "sensacao": _weather_int(cur.get("apparent_temperature")),
             "descricao": WEATHER_WMO.get(code, f"Código {code}"),
@@ -1723,13 +1881,97 @@ def _weather_from_open_meteo() -> dict[str, Any] | None:
         return None
 
 
+class WeatherLocationIn(BaseModel):
+    city: str
+
+
 @app.get("/weather")
 def weather():
-    # PRIMÁRIO: open-meteo (medição de ~15 min). RESERVA: wttr.in (mede de 1 a 3 h atrás).
-    out = _weather_from_open_meteo() or _weather_from_wttr()
+    """Clima da cidade configurada (config.json) ou detectada por IP.
+
+    PRIMÁRIO: open-meteo (medição de ~15 min). RESERVA: wttr.in (mede de 1 a 3 h atrás).
+    Sem configuração e sem IP, NÃO inventa uma cidade: devolve `needs_city` para o
+    JARVIS perguntar a do Comandante.
+    """
+    loc = _weather_location()
+    if loc["source"] == "none":
+        _security_log("weather", "sem localização (nem config.json, nem IP)")
+        return {
+            "ok": False,
+            "needs_city": True,
+            "city": None,
+            "cidade": None,
+            "location_source": "none",
+            "error": "não consegui detectar sua localização: qual é a sua cidade?",
+        }
+    out = _weather_from_open_meteo(loc) or _weather_from_wttr(loc)
     if not out:
-        return JSONResponse({"ok": False, "error": "não consegui obter os dados do clima"}, status_code=502)
+        return JSONResponse(
+            {"ok": False, "error": "não consegui obter os dados do clima", "location_source": loc["source"]},
+            status_code=502,
+        )
+    out["city"] = out.get("cidade")
+    out["location_source"] = loc["source"]
+    # privacidade: loga só a cidade PÚBLICA e de onde ela veio — nunca lat/lon
+    _security_log(
+        "weather", f"cidade={out.get('city')} origem={out.get('location_source')} fonte={out.get('fonte')}"
+    )
     return out
+
+
+@app.get("/weather/location")
+def weather_location_get():
+    """Cidade do clima em uso (é o que a UI pré-carrega no campo das configurações)."""
+    cfg = _read_config()
+    loc = _weather_location()
+    return {
+        "ok": True,
+        "city": loc["city"],
+        "lat": loc["lat"],
+        "lon": loc["lon"],
+        "location_source": loc["source"],
+        "configured_city": str(cfg.get("weather_city") or ""),
+    }
+
+
+@app.post("/weather/location")
+def weather_location_set(body: WeatherLocationIn):
+    """Grava a cidade escolhida nas configurações.
+
+    O lat/lon é resolvido UMA vez aqui (geopy/Nominatim) e persistido no config.json —
+    o /weather nunca chama o Nominatim (rate limit do OSM).
+    """
+    city = re.sub(r"\s+", " ", str(body.city or "")).strip()[:80]
+    if not city:
+        return JSONResponse({"error": "informe a cidade (ex.: São Paulo, SP)"}, status_code=400)
+    try:
+        from geopy.geocoders import Nominatim  # type: ignore
+
+        found = Nominatim(user_agent="JARVIS-local/1.0").geocode(city, timeout=8)
+    except Exception as exc:  # noqa: BLE001
+        _security_log("weather", f"geocodificação falhou ({city!r}): {type(exc).__name__}", blocked=True)
+        return JSONResponse({"error": f"não consegui consultar a cidade agora: {exc}"}, status_code=502)
+    lat, lon = _num(getattr(found, "latitude", None)), _num(getattr(found, "longitude", None))
+    if found is None or not _valid_latlon(lat, lon):
+        _security_log("weather", f"cidade não encontrada: {city!r}", blocked=True)
+        return JSONResponse({"error": f"não encontrei {city!r}"}, status_code=404)
+    cfg = _read_config()
+    cfg["weather_city"] = city
+    cfg["weather_lat"] = round(float(lat), 4)
+    cfg["weather_lon"] = round(float(lon), 4)
+    cfg["weather_source"] = "manual"
+    try:
+        _write_config(cfg)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"não consegui salvar a cidade: {exc}"}, status_code=500)
+    _security_log("weather", f"cidade definida nas configurações: {city}")
+    return {
+        "ok": True,
+        "city": city,
+        "lat": cfg["weather_lat"],
+        "lon": cfg["weather_lon"],
+        "location_source": "manual",
+    }
 
 
 # ── 9b. visualizador 3D on-demand (/visualize-3d) ───────────────────────
@@ -2258,6 +2500,81 @@ def health():
         "hostname": socket.gethostname(),
         "uptime_hours": round((time.time() - psutil.boot_time()) / 3600, 1),
     }
+
+
+# ── Modo AR: modelos 3D disponíveis (/ar-models) ────────────────────────
+# Alimenta a página /ar.html e é o gancho pronto para o futuro
+# "JARVIS, me mostra um carro na mão" abrir a AR já no modelo certo
+# (a página aceita /ar.html?modelo=<nome|número>). Só leitura.
+def _ar_models_dir() -> Path:
+    """public/models — no projeto (dev) ou dentro do _MEIPASS (no .exe)."""
+    candidatos = [APP_DIR.parent / "public" / "models"]
+    if getattr(sys, "frozen", False):
+        candidatos.append(Path(getattr(sys, "_MEIPASS", str(APP_DIR))) / "public" / "models")
+    for c in candidatos:
+        if c.is_dir():
+            return c
+    return candidatos[0]
+
+
+@app.get("/ar-models")
+def ar_models():
+    base = _ar_models_dir()
+    modelos = []
+    if base.is_dir():
+        for glb in sorted(base.rglob("*.glb"), key=lambda p: p.relative_to(base).as_posix().lower()):
+            rel = glb.relative_to(base).as_posix()
+            modelos.append({"name": glb.stem, "path": rel, "url": "/models/" + rel,
+                            "size": glb.stat().st_size})
+    return {"ok": True, "total": len(modelos), "models": modelos,
+            "page": "/ar.html", "folder": str(base)}
+
+
+# ── Modo AR: abrir a página já no modelo pedido (/ar-open) ──────────────
+# Quem chama é a intenção de voz de app.py/server.js ("Jarvis, me mostra uma
+# espada na mão"). A página /ar.html roda na UI (8755) e resolve ?modelo=
+# contra os nomes dela (MODEL_NAMES do public/ar.html) — nome desconhecido cai
+# no modelo padrão, então nenhum valor aqui consegue quebrar a página.
+AR_UI_PORT = int(os.environ.get("JARVIS_UI_PORT", "8755"))
+AR_PAGE_URL = f"http://127.0.0.1:{AR_UI_PORT}/ar.html"
+# artigo do nome, só para a frase falada ("Abrindo A espada no Modo AR")
+_AR_ARTIGO = {"espada": "a", "nave": "a", "arvore": "a", "van": "a", "truck": "a"}
+
+
+class ArOpenIn(BaseModel):
+    model: str | None = None
+
+
+def _sem_acento(txt: str) -> str:
+    """minúsculas e sem acento — só para sanitizar o que vai na URL."""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", str(txt).lower()) if unicodedata.category(c) != "Mn"
+    )
+
+
+def _ar_modelo(pedido: str | None) -> str:
+    """Nome pronto para a URL: [a-z0-9-], até 24 caracteres."""
+    return re.sub(r"[^a-z0-9\-]", "", _sem_acento(pedido or ""))[:24]
+
+
+@app.post("/ar-open")
+def ar_open(body: ArOpenIn):
+    """Abre /ar.html no navegador já no modelo pedido (sem modelo: o padrão)."""
+    modelo = _ar_modelo(body.model)
+    url = AR_PAGE_URL + (f"?modelo={modelo}" if modelo else "")
+    try:
+        webbrowser.open(url)
+    except Exception as exc:  # noqa: BLE001
+        _security_log("ar-open", f"falha ao abrir {url}: {exc}", blocked=True)
+        return JSONResponse(
+            {"ok": False, "error": f"não consegui abrir o navegador: {exc}"}, status_code=500
+        )
+    _security_log("ar-open", f"{modelo or 'padrão'} -> {url}")
+    if modelo:
+        frase = f"Abrindo {_AR_ARTIGO.get(modelo, 'o')} {modelo} no Modo AR, Comandante."
+    else:
+        frase = "Abrindo o Modo AR, Comandante."
+    return {"ok": True, "model": modelo or None, "url": url, "page": "/ar.html", "message": frase}
 
 
 # ── 13. memória persistente (/memory) ───────────────────────────────────

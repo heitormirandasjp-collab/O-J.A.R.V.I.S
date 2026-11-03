@@ -1,4 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
@@ -23,6 +25,25 @@ hiddenimports += collect_submodules('aiohttp')
 tmp_ret = collect_all('tokenizers')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 hiddenimports += collect_submodules('tqdm')
+# Clima (v1.0.19): `backend/main.py` entra como DADO (importlib no launcher.py), então o
+# PyInstaller NÃO analisa os imports dele — geopy/whereismyip só entram se declarados aqui.
+tmp_ret = collect_all('geopy')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+hiddenimports += collect_submodules('whereismyip')
+
+# ── voz do Piper (v1.0.19) ─────────────────────────────────────────────
+# O `.onnx` da voz NÃO é biblioteca: sem ele o Piper simplesmente não existe no `.exe`
+# (o backend caía no dataset de teste do onnxruntime e falhava com
+# "logreg_iris.onnx.json"). Vai em `datas` — é dado lido em runtime, não DLL.
+# Só a voz padrão entra no build (~63 MB); as outras continuam disponíveis em
+# POST /voices/download (o instalador cresceria ~63 MB por voz extra).
+_HERE = Path(SPECPATH)
+_BUNDLED_VOICES = ('pt_BR-cadu-medium',)
+for _stem in _BUNDLED_VOICES:
+    for _name in (f'{_stem}.onnx', f'{_stem}.onnx.json'):
+        _src = _HERE / 'voices' / _name
+        if _src.is_file():
+            datas.append((str(_src), 'voices'))
 
 # ── segredos NUNCA entram no build (v1.0.16) ─────────────────────────────
 # O JARVIS-Setup.exe é distribuído publicamente: o config.json (chave da Groq),

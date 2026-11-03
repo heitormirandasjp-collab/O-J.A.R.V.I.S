@@ -297,7 +297,12 @@ def clamp_tts_voice(v: Any, engine: str = TTS_DEFAULT_ENGINE) -> str:
 def load_config() -> dict[str, Any]:
     """Lê a configuração; se a chave não estiver no arquivo atual, procura nos antigos."""
     data = _read_config_file(config_path())
+    # chaves do clima (/weather): o backend as grava em POST /weather/location.
+    # O load_config reconstrói só o dict conhecido; sem preservar weather_*, o próximo
+    # "Salvar" nas configurações APAGARIA weather_city/lat/lon do config.json.
+    weather = {k: v for k, v in (data or {}).items() if isinstance(k, str) and k.startswith("weather_")}
     cfg = {
+        **weather,
         "groqKey": data.get("groqKey", ""),
         "groqModel": data.get("groqModel", ""),
         "continuous_listen_minutes": clamp_minutes(data.get("continuous_listen_minutes", 5)),
@@ -311,6 +316,7 @@ def load_config() -> dict[str, Any]:
             old = _read_config_file(legacy)
             if old.get("groqKey"):
                 cfg = {
+                    **weather,
                     "groqKey": old.get("groqKey", ""),
                     "groqModel": old.get("groqModel", "") or cfg["groqModel"],
                     "continuous_listen_minutes": clamp_minutes(
@@ -515,11 +521,20 @@ def _measured_hhmm(value: Any) -> str:
 
 def _weather_sentence(w: dict[str, Any] | None) -> str:
     """Frase pronta do clima no estilo JARVIS (resposta por voz)."""
+    if w and w.get("needs_city"):
+        # sem config e sem IP: pergunta a cidade em vez de mostrar a de outra pessoa
+        return (
+            "Comandante, não consegui detectar sua localização. Qual é a sua cidade? "
+            "Eu ajusto o clima nas configurações."
+        )
     if not w or not w.get("ok"):
         return "Não consegui obter os dados do clima, Comandante."
     desc = str(w.get("descricao") or "").strip().lower()
+    # a cidade sempre aparece na fala: não é "o clima" genérico, é o da SUA cidade
+    cidade = str(w.get("city") or w.get("cidade") or "").strip()
+    onde = f"em {cidade}, " if cidade else "agora, "
     frase = (
-        f"Comandante, agora em {w.get('cidade') or 'São João do Paraíso'} faz {w.get('temp')} graus"
+        f"Comandante, {onde}faz {w.get('temp')} graus"
         f"{', ' + desc if desc else ''}. A máxima hoje é {w.get('max')} e a mínima {w.get('min')}."
     )
     if any(p in desc for p in ("chuva", "chuv", "tempestade", "garoa")):
@@ -629,7 +644,7 @@ def greeting_context(period: str, clima: dict[str, Any] | None, noticias: list[d
     if spec["noticias"]:
         linhas.append(
             "Responda EXATAMENTE neste formato, em 4 a 6 frases: \""
-            f"{saud}, Comandante. [frase de saudação natural]. Em São João do Paraíso, agora faz "
+            f"{saud}, Comandante. [frase de saudação natural]. Em [cidade do campo 'cidade' do clima], agora faz "
             "[X] graus, [descrição]. A máxima hoje é [X] e a mínima [Y]. "
             "[Se houver previsão de chuva: 'Recomendo levar um guarda-chuva, Senhor.'] "
             "As principais notícias de hoje: [3 notícias resumidas em frases naturais].\""
@@ -637,7 +652,7 @@ def greeting_context(period: str, clima: dict[str, Any] | None, noticias: list[d
     elif spec["clima"]:
         linhas.append(
             "Responda em 2 a 3 frases, neste formato: \""
-            f"{saud}, Comandante. [frase de saudação natural]. Em São João do Paraíso, agora faz "
+            f"{saud}, Comandante. [frase de saudação natural]. Em [cidade do campo 'cidade' do clima], agora faz "
             "[X] graus, [descrição]. A máxima hoje é [X] e a mínima [Y].\" "
             "NÃO fale de notícias nesta saudação."
         )
@@ -650,6 +665,10 @@ def greeting_context(period: str, clima: dict[str, Any] | None, noticias: list[d
         linhas.append(
             "Se o clima trouxer 'medido_em', cite o horário da medição no fim da parte do clima "
             "(ex.: \"(Dados de 09:30.)\") — é o que mostra que a informação está fresca."
+        )
+        linhas.append(
+            "Diga sempre a cidade do clima (campo 'cidade') na frase — nunca uma cidade fixa. "
+            "Se o clima vier com 'needs_city', pergunte ao Comandante qual é a cidade dele."
         )
     linhas.append(
         "Use SOMENTE os dados acima: nunca invente temperatura, previsão ou manchete. "
@@ -1191,6 +1210,14 @@ def run_tool(tool: dict[str, Any]) -> dict[str, Any]:
         if r is None:
             return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
         if not r.get("ok"):
+            if r.get("needs_city"):
+                # a cidade não foi configurada e o IP não resolveu: perguntar, não inventar
+                return {
+                    "name": name,
+                    "ok": False,
+                    "summary": "Comandante, não consegui detectar sua localização. Qual é a sua cidade?",
+                    "detail": r,
+                }
             return {"name": name, "ok": False, "summary": f"erro: {r.get('error') or 'sem dados do clima'}", "detail": r}
         # frase pronta no estilo JARVIS: é o que vai para a voz (e para o modo sem Groq)
         return {"name": name, "ok": True, "summary": _weather_sentence(r), "detail": r}
@@ -1274,7 +1301,7 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     {"type": "function", "function": {"name": "agenda_check", "description": "Eventos que começam nos próximos minutos.", "parameters": {"type": "object", "properties": {"window": {"type": "integer"}}}}},
     {"type": "function", "function": {"name": "stocks", "description": "Cotação de ações (PETR4, AAPL...).", "parameters": {"type": "object", "properties": {"symbols": {"type": "string", "description": "separados por vírgula"}}, "required": ["symbols"]}}},
     {"type": "function", "function": {"name": "currencies", "description": "Cotações de moedas (USD/BRL, EUR/BRL, USD/EUR).", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "weather", "description": "Clima atual e previsão de hoje para São João do Paraíso - MG (dados reais do wttr.in/open-meteo).", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "weather", "description": "Clima atual e previsão de hoje para a cidade configurada no config.json (geo por IP como reserva; dados reais do open-meteo/wttr.in).", "parameters": {"type": "object", "properties": {}}}},
 ]
 
 TOOL_ALIASES = {
@@ -1383,6 +1410,120 @@ def tool_context(tool: dict[str, Any], result: dict[str, Any]) -> str:
     )
 
 
+# ── Modo AR: "Jarvis, me mostra um carro na mão" ──────────────────────
+# Diferente do visualizador 3D (que desenha na TELA), aqui a página /ar.html
+# abre no navegador com o modelo sobre a palma da mão (?modelo=<nome>).
+# Os nomes de AR_MODEL_ALIASES são os da própria página (MODEL_NAMES do public/ar.html).
+AR_OBJECT_RE = re.compile(
+    r"\b(?:me\s+)?(?:mostra|mostre|mostrar|exibe|exiba|exibir|p[õoõe]e|po[õeõ]e|coloca|coloque|"
+    r"colocar|traz|traga|trazer|abre|abra|abrir|ver|visualiza|visualizar)\b"
+    r"\s+(?:umas|uma|uns|um|os|as|o|a|minhas|minha|meus|meu)?\s*"
+    r"([0-9a-zà-öø-ÿ][0-9a-zà-öø-ÿ\- ]{1,29}?)\s+(?:na|nas)\s+(?:minha\s+|minhas\s+|meu\s+)?m[ãa]os?\b",
+    re.IGNORECASE,
+)
+AR_MODE_RE = re.compile(
+    r"\bmodo\s+(?:ar|a\.?\s?r\.?)\b|\brealidade\s+aumentada\b|\bc[âa]mera\s+ar\b",
+    re.IGNORECASE,
+)
+AR_OPEN_RE = re.compile(
+    r"\b(?:ativa|ative|ativar|liga|ligue|ligar|abre|abra|abrir|entra|entre|entrar|"
+    r"inicia|inicie|iniciar)\b[^.?!,;]{0,18}\b(?:ar|a\.?\s?r\.?)\b",
+    re.IGNORECASE,
+)
+# objeto falado → modelo na página /ar.html (nomes = MODEL_NAMES do public/ar.html).
+# Nomes sem acento (comparados com _fold). Os mais específicos vêm primeiro.
+AR_MODEL_ALIASES: list[tuple[str, str]] = [
+    ("carro esportivo", "hatchback-sports"),
+    ("carro de corrida", "hatchback-sports"),
+    ("esportivo", "hatchback-sports"),
+    ("hatchback", "hatchback-sports"),
+    ("carro", "sedan"),
+    ("sedan", "sedan"),
+    ("automovel", "sedan"),
+    ("veiculo", "sedan"),
+    ("truck", "truck"),
+    ("caminhao", "truck"),
+    ("caminhonete", "truck"),
+    ("picape", "truck"),
+    ("furgao", "van"),
+    ("van", "van"),
+    ("kombi", "van"),
+    ("personagem", "character"),
+    ("robo", "character"),
+    ("boneco", "character"),
+    ("humano", "character"),
+    ("espada", "espada"),
+    ("adaga", "espada"),
+    ("sabre", "espada"),
+    ("arma", "espada"),
+    ("escudo", "escudo"),
+    ("shield", "escudo"),
+    ("espaconave", "nave"),
+    ("nave", "nave"),
+    ("foguete", "nave"),
+    ("astronauta", "astronauta"),
+    ("arvore", "arvore"),
+    ("planta", "arvore"),
+    ("pinheiro", "arvore"),
+    ("hamburger", "hamburger"),
+    ("hamburguer", "hamburger"),   # grafia portuguesa
+    ("burger", "hamburger"),
+    ("lanche", "hamburger"),
+    ("comida", "hamburger"),
+    ("sanduiche", "hamburger"),
+]
+
+
+def _ar_alias_hit(alias: str, texto: str) -> bool:
+    """Casa "carro" em "carro"/"carros"; alias curto (van, nave) exige palavra inteira."""
+    if len(alias) <= 4:
+        return re.search(rf"\b{re.escape(alias)}s?\b", texto) is not None
+    return re.search(rf"\b{re.escape(alias)}\w{{0,4}}\b", texto) is not None
+
+
+def detect_ar_mode(text: str) -> tuple[bool, str | None]:
+    """"me mostra uma espada na mão" → (True, "espada") · "ativa o modo AR" → (True, None).
+    "me mostra um carro" (sem "na mão") → (False, None): segue para o visualizador 3D."""
+    t = " ".join(str(text or "").split())
+    if not t:
+        return False, None
+    m = AR_OBJECT_RE.search(t)
+    if m:
+        obj = re.sub(r"\s+", " ", m.group(1)).strip(" .,!?:;-—").lower()
+        # resto de artigo (o grupo acima é opcional: "uma espada" pode capturar "a espada")
+        obj = re.sub(r"^(?:umas|uma|uns|um|os|as|o|a|minhas|minha|meus|meu)\s+", "", obj)
+        return True, obj or None
+    if AR_MODE_RE.search(t) or AR_OPEN_RE.search(t):
+        return True, None
+    return False, None
+
+
+def ar_modelo_do_objeto(obj: str | None) -> str | None:
+    """Objeto falado → modelo da página (`/ar.html?modelo=`). Sem acerto devolve None
+    (a página abre no padrão). O mapa local cobre o vocabulário comum; o /ar-models
+    do backend de ferramentas é a reserva para nomes fora dele (ex.: "esportivo")."""
+    if not obj:
+        return None
+    alvo = _fold(str(obj)).strip()
+    if not alvo:
+        return None
+    candidatos = [alvo] + [p for p in alvo.split() if p and p != alvo]
+    for chave, modelo in AR_MODEL_ALIASES:
+        if any(_ar_alias_hit(chave, c) for c in candidatos):
+            return modelo
+    lista = _backend("GET", "/ar-models", timeout=8) or {}
+    for item in lista.get("models") or []:
+        nome = _fold(str((item or {}).get("name") or "")).strip()
+        if not nome:
+            continue
+        partes = [p for p in re.split(r"[^a-z0-9]+", nome) if len(p) >= 4]
+        if nome in alvo or alvo in nome:
+            return str(item.get("name"))
+        if any(p in c or c in p for p in partes for c in candidatos if len(c) >= 4):
+            return str(item.get("name"))
+    return None
+
+
 # ── visualizador 3D (intenção detectada aqui, sem depender do modelo) ──
 VIS3D_VERB_RE = re.compile(
     r"\b(me\s+mostra|mostra|visualiza|visualizar|renderiza|renderizar|desenha|desenhar)\b",
@@ -1394,7 +1535,8 @@ VIS3D_MARK_RE = re.compile(
 )
 VIS3D_BLOCK_RE = re.compile(
     r"\b(not[íi]cias?|manchetes?|agendas?|lembretes?|cota[çc][õo]es?|a[çc][õo]es?|d[óo]lar|euro|processos?|"
-    r"cpu|mem[óo]rias?|discos?|sistemas?|climas?|previs[ãa]o|horas?|datas?|arquivos?|pastas?|imagens?|fotos?)\b",
+    r"cpu|mem[óo]rias?|discos?|sistemas?|climas?|previs[ãa]o|horas?|datas?|arquivos?|pastas?|imagens?|fotos?|"
+    r"na\s+(?:minha\s+|minhas\s+|meu\s+)?m[ãa]os?)\b",
     re.IGNORECASE,
 )
 _VIS3D_STOP = {"isso", "isto", "ele", "ela", "aquilo", "um", "uma", "o", "a"}
@@ -1512,6 +1654,33 @@ async def api_chat(request: Request) -> StreamingResponse:
             cresult = run_tool(critical)
             pre_tools.append((critical, cresult))
             messages.append({"role": "system", "content": tool_context(critical, cresult)})
+
+    # 2a) Modo AR: "Jarvis, me mostra uma espada na mão" → abre /ar.html?modelo=espada
+    #     no navegador e responde com uma frase fixa (não passa pelo modelo, não abre o chat)
+    if not confirmed:
+        ar_intent, ar_obj = detect_ar_mode(user_text)
+        if ar_intent:
+            ar_model: str | None = ar_modelo_do_objeto(ar_obj)
+            ar = _backend("POST", "/ar-open", {"model": ar_model}, timeout=20)
+            ar_ok = bool((ar or {}).get("ok"))
+            if ar_ok:
+                ar_msg = str((ar or {}).get("message") or "Abrindo o Modo AR, Comandante.")
+                ar_summary = f"{ar_model or 'padrão'} → {str((ar or {}).get('url') or '')}"
+            else:
+                ar_msg = (
+                    "Não consegui abrir o Modo AR, Comandante. "
+                    + str((ar or {}).get("error") or "o backend de ferramentas não respondeu.")
+                )
+                ar_summary = f"{ar_model or 'padrão'} — falhou"
+
+            async def ar_stream() -> AsyncIterator[str]:
+                yield sse("tool", {"name": "ar-open", "ok": ar_ok, "summary": ar_summary})
+                yield sse("start", {"provider": "jarvis-ar", "model": "ar-open"})
+                for i in range(0, len(ar_msg), 28):
+                    yield sse("delta", {"t": ar_msg[i: i + 28]})
+                yield sse("done", {"provider": "jarvis-ar", "model": "ar-open"})
+
+            return StreamingResponse(ar_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
     # 2b) visualizador 3D: "Jarvis, me mostra um carro" → abre o navegador e responde
     #     com uma frase fixa (não passa pelo modelo, não abre o chat)

@@ -76,6 +76,7 @@
           <input id="viz3dInput" type="text" maxlength="200" placeholder="ex.: um carro vermelho" />
           <button id="viz3dGo">Ver</button>
         </div>
+        <button class="focus-btn" id="arBtn" title="Abre a câmera com um modelo 3D na sua mão"><span>📷</span> Ativar AR</button>
         <button class="focus-btn" id="weatherBtn"><span>🌤️</span> Clima</button>
         <div class="weather-box" id="weatherBox" hidden>
           <div class="wx-head"><b id="wxCity">—</b><small id="wxSrc">—</small></div>
@@ -240,6 +241,10 @@
         <label>Escuta contínua após "Jarvis" (minutos; <b>0</b> = infinito)
           <input id="setContinuousMin" type="number" min="0" max="1440" step="1" value="5" />
         </label>
+        <label>Cidade do clima (🌤️ Clima e "bom dia")
+          <input id="setWeatherCity" type="text" placeholder="ex.: São Paulo, SP" autocomplete="off" />
+        </label>
+        <p class="hint dim" id="weatherCityHint"></p>
         <div class="modal-actions">
           <button class="ghost-btn" id="previewVoice">Testar voz</button>
           <button class="ghost-btn" id="downloadVoice">Baixar voz Piper</button>

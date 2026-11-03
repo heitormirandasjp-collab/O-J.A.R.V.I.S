@@ -89,6 +89,9 @@ Tudo fica em **`config.json`**, na raiz do projeto (no `.exe`, em
 | `tts_engine` | motor de voz: `piper` ou `edge` | `piper` |
 | `tts_voice` | voz: arquivo `.onnx` (Piper) ou ShortName (Edge) | `pt_BR-cadu-medium.onnx` |
 | `continuous_listen_minutes` | minutos de escuta contínua após o wake word (`0` = infinito) | `5` |
+| `weather_city` | cidade do clima (⚙ → *Cidade do clima*) | vazio = detecta por IP |
+| `weather_lat` · `weather_lon` | coordenadas resolvidas **uma vez** ao salvar a cidade (geopy/Nominatim) | vazio = detecta por IP |
+| `weather_source` | `manual` quando a cidade veio do campo nas configurações | vazio = `config` |
 
 **Primeira vez (clone novo)**: copie o template versionado e preencha a chave:
 
@@ -424,6 +427,10 @@ A voz tem **dois motores**, escolhidos no modal de configurações (⚙ → *Mot
   (padrão), `Nicolau`, `Francisca` e `Thalita` — listadas em `GET /voices-edge` (a lista do
   serviço varia por região; as conhecidas entram sempre). **Precisa de internet**: é o único
   ponto do JARVIS que envia a frase falada para fora — ver **[SECURITY.md](SECURITY.md)**.
+  Exige **`edge-tts >= 7.3.0`** (`requirements.txt`): até a 7.2.x a biblioteca usava o host
+  `speech.platform.bing.com`, desativado pela Microsoft, e o `/tts` voltava **HTTP 403**
+  (fix upstream `rany2/edge-tts#490`). O `.exe` só herda a correção se for **regerado**, porque
+  a biblioteca é empacotada dentro dele.
 
 **Reserva automática nos dois sentidos** (a ordem foi invertida na v1.0.13): o `/tts` tenta o
 motor escolhido e, se ele falhar, sintetiza na hora com o outro — Piper sem a voz baixada (ou
@@ -447,6 +454,12 @@ para o Piper — o slider fica desabilitado no Edge, e a velocidade vale nos doi
   Também existem `pt_BR-faber-medium` e `pt-BR-razo-medium`; todas são listadas em
   `GET /voices` e dá para escolher no modal de configurações ou baixar em
   `POST /voices/download`.
+- **No `.exe`**: a voz **padrão vai empacotada** em `_internal/voices/` (`datas` do
+  `JARVIS.spec`) — sem isso o Piper não existe na máquina de quem instala. As outras vozes
+  (~63 MB cada) ficam de fora e continuam disponíveis em `POST /voices/download`. O backend
+  procura os `.onnx` também em `sys._MEIPASS`/`_internal/voices` e só aceita como voz o
+  arquivo que tenha o `.onnx.json` ao lado (era assim que ele confundia o dataset de teste
+  `onnxruntime/datasets/logreg_iris.onnx` com uma voz).
 - **Fala mais limpa**: o texto passa por normalização antes do Piper —
   palavras coladas separadas (`"olá.Como"` → `"olá. Como"`), markdown/emojis/símbolos
   removidos, abreviações expandidas (`vc` → `você`, `tá` → `está`, `obg` → `obrigado`),
@@ -503,7 +516,8 @@ Quando o Comandante pede notícias, o JARVIS **não lê os títulos crus** — e
 | `POST /tts` | `{ "text", "engine", "rate", "pitch", "voice" }` → MP3 (Edge) ou WAV (Piper) |
 | `GET /stocks?symbols=PETR4,AAPL` | brapi.dev (BR) + Yahoo (US) |
 | `GET /currencies` | USD/BRL, EUR/BRL, USD/EUR |
-| `GET /weather` | clima + previsão de hoje de São João do Paraíso - MG (wttr.in; open-meteo de reserva) |
+| `GET /weather` | clima + previsão de hoje da cidade configurada (`config.json`) ou detectada por IP (open-meteo primário; wttr.in reserva) |
+| `GET /weather/location` · `POST /weather/location` | cidade do clima em uso · grava `{ "city" }` resolvendo lat/lon uma vez (geopy) |
 | `POST /memory/add` | `{ "text", "source" }` → memória persistente (sanitizada) |
 | `GET /memory/search?q=...&n=5` | busca semântica nas memórias |
 | `GET /memory/list?limit=100` | memórias mais recentes primeiro |
@@ -603,8 +617,8 @@ COMANDANTE DISSER BOM DIA"), que é a fonte única do prompt de personalidade.
 
 ### Clima
 
-`GET /weather` devolve o clima real de **São João do Paraíso - MG** (`-15.377, -42.006`),
-sem chave. A ordem das fontes foi **invertida na v1.0.12**:
+`GET /weather` devolve o clima real da cidade **configurada**, sem chave. A ordem das fontes
+foi **invertida na v1.0.12**:
 
 | Ordem | Fonte | Frescor da medição |
 |---|---|---|
@@ -614,7 +628,32 @@ sem chave. A ordem das fontes foi **invertida na v1.0.12**:
 O wttr.in era primário e chegava a **4 °C e 8% de umidade de diferença** por causa desse
 atraso — agora ele só entra se o open-meteo falhar. O JSON tem `temp`, `sensacao`, `descricao`,
 `umidade`, `vento` ("ESE 12km/h"), `max`, `min`, **`medido_em`** (open-meteo:
-`"2026-10-11T09:45"`; wttr.in: `"12:14 PM"`) e `fonte`.
+`"2026-10-11T09:45"`; wttr.in: `"12:14 PM"`), `city` (e `cidade`, por compatibilidade),
+`location_source` e `fonte`.
+
+#### Cidade do clima (v1.0.19)
+
+Até a v1.0.18 a cidade era **fixa** em São João do Paraíso - MG (`-15.377, -42.006`) para
+todo mundo. Agora o `/weather` resolve a cidade nesta ordem:
+
+| Ordem | De onde vem | `location_source` |
+|---|---|---|
+| **1º** | `weather_city` + `weather_lat` + `weather_lon` salvas pelo campo **"Cidade do clima"** (⚙) | `manual` |
+| 2º | as mesmas chaves escritas à mão no `config.json` | `config` |
+| 3º | **geolocalização por IP** (`whereismyip`, sem chave) — com **prazo de 2 s**; VPN/CGNAT/sem internet → segue | `ip` |
+| 4º | nada disso: **não inventa** — devolve `needs_city: true` e o JARVIS pergunta *"Qual é a sua cidade?"* | `none` |
+
+- O **Nominatim (geopy)** é chamado **uma única vez**, quando a cidade é salva
+  (`POST /weather/location`); o lat/lon vai para o `config.json` (**0600**, a mesma regra do
+  app.py) e o `/weather` só lê o arquivo — nada de consultar o OSM a cada clique.
+- A ideia da geolocalização por IP roda numa thread com **prazo de 2 s** (sucesso fica 30 min
+  em cache, falha 60 s): o clima nunca fica pendurado esperando a rede.
+- **Privacidade**: o `security.log` registra só `cidade=..., origem=...` — **nunca** lat/lon.
+- Quem já usava o app **não quebra**: o `config.json` existente foi semeado com as coordenadas
+  antigas e continua em São João do Paraíso (`location_source: config`) até a cidade ser
+  trocada nas configurações. O `config.json.example` (instalação nova) sai com os campos
+  **vazios**, então o primeiro clima já vem por IP.
+- A frase por voz também fala a cidade: *"Comandante, em São Paulo, faz 22 graus, …"*.
 
 O horário da medição vai para a **voz** — *"…A máxima hoje é 33 e a mínima 17. (Dados de
 09:45.)"*, e `(Dados de 12:14, via wttr.in.)` quando veio da reserva — e para o **rodapé do
@@ -771,6 +810,60 @@ sem abrir o chat.
 Proteções (prompt sanitizado, CSP, limite de tamanho, logs) estão em
 [SECURITY.md](SECURITY.md#9-visualizador-3d--post-visualize-3d-backendmainpy).
 
+## Modo AR (webcam + modelo 3D na mão)
+
+O botão **"📷 Ativar AR"** — no painel de voz, logo abaixo de *Visualizar em 3D* — abre a página
+**`public/ar.html`** em nova aba. Se o navegador bloquear o pop-up, ela abre na mesma aba e o
+**"← Voltar"** da própria página traz o HUD de volta. Com a câmera liberada, um **modelo 3D fica
+grudado na palma da mão**, em tempo real, sem tirar o HUD da tela.
+
+- **Como funciona**: `getUserMedia` (640×480; prefere a câmera "Source 2"/DroidCam se existirem)
+  → **MediaPipe Hands** (CDN, `maxNumHands: 1`, `minTrackingConfidence: 0.7`,
+  `minDetectionConfidence: 0.5`) → **Three.js r128** com **câmera ortográfica** (1 unidade de
+  mundo = 1 px de tela), o que coloca o modelo no lugar exato da palma e na escala da mão sem
+  distorção de perspectiva.
+- **Modelos**: 11 GLB **CC0 do Kenney** — 4 carros (sedan, truck, hatchback-sports, van),
+  personagem, espada, escudo, nave, astronauta, árvore e hamburger — em `public/models/`,
+  **1,13 MB no total**, cada pack com as suas texturas em subpasta própria e a licença
+  (`LICENSE-*.txt`) ao lado (os `colormap.png` de packs diferentes são arquivos diferentes e
+  colidiriam se ficassem no mesmo diretório).
+- **Teclas**: `1`-`9`, `0` e `-` trocam direto; **`P`** avança e **`Shift+P`** volta (ciclo pelos
+  11 modelos); **`R`** zera tudo e volta ao sedan; **`ESC`** limpa a cena sem parar o
+  rastreamento. No rodapé da página as teclas e os gestos ficam sempre à vista.
+- **Gestos**: **punho esconde** pelo critério de **dedo dobrado** (a ponta fica mais perto do
+  pulso do que a articulação PIP — não depende do tamanho da mão nem da distância à câmera),
+  **mão aberta mostra** e **verso da mão esconde** (o MediaPipe é treinado com a palma visível e
+  "estima" os pontos quando vê o verso; o teste é um produto vetorial 2D combinado com o label
+  `Left`/`Right` do MediaPipe, para funcionar com as duas mãos). Mão de **perfil** não esconde
+  (ambígua de propósito, para não piscar). O gesto de **pinça foi removido**: fechar a mão
+  aproxima os dedos e ele trocava o modelo sem querer.
+- **Estabilidade**: os 21 pontos passam por **suavização EMA** (o modelo e o esqueleto saem do
+  mesmo estado suavizado), a posição é **clampada** dentro do canvas, perdas curtas de detecção
+  têm **grace period** (segura a última pose antes de esconder) e cada frame é validado por
+  **confiança** e por **geometria relativa ao tamanho da mão** (o limite absoluto antigo
+  descartava mão válida só por estar longe).
+- **Abrir já num modelo**: `ar.html?modelo=carro` (nome parcial) ou `ar.html?modelo=3` (1 a 11).
+- **Requisitos**: câmera funcionando, navegador moderno e **internet** — o MediaPipe Hands e o
+  `GLTFLoader` vêm de CDN (os modelos são locais). O Three.js do globo também tem cópia local em
+  `public/vendor/`, mas esta página usa a versão de CDN por causa do loader.
+- **Voz**: diga *"Jarvis, me mostra um carro na mão"* (ou *espada*, *hambúrguer*, *nave*,
+  *árvore*, *robô*…, ou só *"ativa o modo AR"*) e o JARVIS **abre a AR já no modelo certo** e
+  responde por voz *"Abrindo o sedan no Modo AR, Comandante."* — sem abrir o chat. Quem manda em
+  quê: *"na mão"* é o gatilho (o pedido **sem** ele continua indo para o visualizador 3D, que
+  desenha na **tela**); o objeto é casado com os 11 modelos por **mapa de sinônimos**
+  (*carro* → sedan, *caminhão* → truck, *carro esportivo* → hatchback-sports, *adaga*/*arma* →
+  espada…) e, se o nome não estiver no mapa, por **match parcial em `GET /ar-models`**.
+  Mapa e detecção vivem nos dois backends (`app.py` e `server.js`) com a mesma tabela — há teste
+  de paridade entre eles.
+- **Backend**: `POST /ar-open` (`backend/main.py`, porta 8000) abre
+  `http://127.0.0.1:8755/ar.html?modelo=<nome>` no navegador e devolve a frase falada; o nome passa
+  por **sanitização** (`[a-z0-9-]`, até 24 caracteres) e um valor desconhecido apenas faz a página
+  cair no modelo padrão. `GET /ar-models` devolve a lista do que existe em `public/models`
+  (`name`, `path`, `url`, `size` + `page: /ar.html`) — só leitura, verificada com `TestClient`.
+
+O protótipo de laboratório que originou tudo continua em `experiments/ar_test.html` (é onde os
+limiares de gesto foram medidos).
+
 ## Modo programador (gera código)
 
 Diga **"Jarvis, me cria um site de portfólio"** (ou *crie*, *programa*, *faz*, *gera*,
@@ -893,7 +986,82 @@ e tudo passa por validação no backend. Resumo do que foi endurecido:
 Detalhes completos, exemplos de log e as variáveis de ambiente para estender as proteções
 estão em **[SECURITY.md](SECURITY.md)**.
 
-## Mudanças recentes (v1.0.16)
+## Mudanças recentes (v1.0.19)
+
+Três correções de **causa raiz** — voz no `.exe` e clima de verdade:
+
+1. **Edge TTS voltou (HTTP 403)** — a versão empacotada (`edge-tts` 7.2.8) falava com o host
+   `speech.platform.bing.com`, desativado pela Microsoft. O `backend/requirements.txt` agora pede
+   **`edge-tts>=7.3.0,<8`** (fix `rany2/edge-tts#490`) e o `.exe` foi regerado com a 7.3.1:
+   `POST /tts` com `engine: "edge"` volta a devolver **MP3** (testado: 200, `audio/mpeg`,
+   cabeçalho ID3). O fallback Edge↔Piper e os registros no `security.log` continuam iguais.
+2. **Piper no `.exe` ("logreg_iris.onnx.json")** — o erro não era do ONNX: o `find_model()`
+   caía num glob de último recurso e pegava o **dataset de teste** do onnxruntime
+   (`onnxruntime/datasets/logreg_iris.onnx`, que não tem `.json`) como se fosse a voz, porque
+   **nenhuma voz ia para o build**. Agora: (a) o `JARVIS.spec` empacota a voz padrão
+   (`voices/pt_BR-cadu-medium.onnx` + `.json`) em `datas`; (b) o backend procura voz em
+   `sys._MEIPASS`/`_internal/voices`; (c) o último recurso só aceita `.onnx` com o `.onnx.json`
+   ao lado; (d) faltando o json, o erro é claro (`falta a configuração X ao lado de Y`) em vez
+   do `FileNotFoundError` cru. `GET /voices` volta a listar as vozes no `.exe`.
+3. **Clima de outra pessoa** — a cidade era fixa em São João do Paraíso - MG. Agora vem do
+   `config.json` (`weather_city`/`weather_lat`/`weather_lon`), com **geolocalização por IP**
+   (`whereismyip`, prazo de 2 s) como reserva e o campo **"Cidade do clima"** nas configurações
+   (lat/lon resolvidos **uma vez** com geopy/Nominatim). Sem config e sem IP ele **pergunta a
+   cidade** (`needs_city`) em vez de mostrar a errada. A resposta ganhou `city` e
+   `location_source`; a voz fala *"em <cidade>"* e o `security.log` registra só a cidade e a
+   origem — nunca lat/lon. Detalhes na seção **[Clima](#clima)**.
+
+### Anteriores (v1.0.18)
+
+Modo AR por voz — a última peça que faltava: *"Jarvis, me mostra uma espada na mão"*.
+
+1. **Detecção de intenção** (`app.py` e `server.js`, os dois backends de chat): "na mão" /
+   "na minha mão" é o gatilho principal; *"ativa o modo AR"*, *"abre a AR"*, *"liga a AR"*,
+   *"modo AR"*, *"realidade aumentada"* e *"câmera AR"* abrem sem objeto. *"Me mostra um carro"*
+   (sem "na mão") **não** é AR: continua indo para o visualizador 3D normal — e o bloqueio
+   *"na mão"* foi somado ao filtro do visualizador, para os dois caminhos nunca disputarem.
+2. **Extração do objeto** por regex a partir dos verbos *mostra/mostre/exibe/põe/coloca/traz/
+   abre/ver/visualiza* (+ artigo opcional): *"um carro"*, *"a espada"*, *"um carro esportivo"*.
+3. **Mapa objeto → modelo** (37 sinônimos, nomes iguais aos `MODEL_NAMES` de `public/ar.html`):
+   carro→sedan, caminhão→truck, carro esportivo→hatchback-sports, furgão→van, robô→character,
+   espada/arma/adaga→espada, escudo→escudo, nave/foguete→nave, astronauta, árvore→arvore,
+   hambúrguer/comida→hamburger. Sem acerto no mapa, **match parcial em `GET /ar-models`**
+   (ex.: *speeder* → `craft_speederA`). Sem acerto nenhum: abre no modelo padrão.
+4. **`POST /ar-open`** em `backend/main.py`: abre `/ar.html?modelo=<nome>` (ou sem parâmetro) no
+   navegador e devolve *"Abrindo o/a <modelo> no Modo AR, Comandante."* — a frase vai por voz e o
+   **chat não é aberto**. O nome é sanitizado (`[a-z0-9-]`, 24 caracteres) antes de virar URL.
+5. **Rede de segurança**: se o backend estiver fora do ar, a resposta é *"Não consegui abrir o
+   Modo AR, Comandante. …"* em vez de silêncio.
+6. **Sobra da FASE B removida**: `public/models/test.glb` era uma cópia byte-a-byte do `sedan.glb`
+   (mesmo md5, citada em nenhum arquivo) e aparecia como 12º modelo no `/ar-models`; com ela fora,
+   o endpoint lista os **11** modelos documentados.
+
+### Anteriores (v1.0.17)
+
+Modo AR integrado ao HUD — a câmera com um modelo 3D na mão virou recurso do JARVIS:
+
+1. **Página `public/ar.html`** (isolada, não mexe no HUD): webcam + MediaPipe Hands + Three.js
+   ortográfico, com o status (câmera, MediaPipe, modelo, gesto, palma, FPS, qualidade, confiança)
+   no visual do JARVIS (ciano/âmbar/azul, fundo `#05070c`, Consolas). Botão **"← Voltar"** para a
+   câmera e volta ao HUD.
+2. **Botão "📷 Ativar AR"** no painel de voz (acima de *Clima*, ao lado de *Visualizar em 3D*):
+   abre `/ar.html` em nova aba e, se o pop-up estiver bloqueado, cai para a mesma aba.
+3. **11 modelos CC0 do Kenney** copiados para `public/models/` (**1,13 MB**, com licenças e
+   texturas por pack): `1`-`9`/`0`/`-` trocam direto, `P`/`Shift+P` ciclam, `R` reseta, `ESC`
+   limpa a cena.
+4. **Gestos**: punho esconde (dedo dobrado, igual nas duas distâncias), mão aberta mostra, verso
+   da mão esconde (produto vetorial + label do MediaPipe, calibrado para mão esquerda e direita) e
+   perfil não esconde. O gesto de pinça **saiu**.
+5. **`ar.html?modelo=<nome|número>`** abre já no modelo pedido e **`GET /ar-models`**
+   (`backend/main.py`, só leitura) lista o que existe em `public/models` — os dois ganchos do
+   *"Jarvis, me mostra um carro na mão"* (endpoint verificado com `TestClient`: 200 JSON,
+   12 arquivos, todos no disco). Essa foi a versão em que a **ligação por voz ainda era TODO** —
+   ela entrou na **v1.0.18**, junto com a remoção do `test.glb` (12 → 11 modelos).
+6. **Verificado com webcam real**: 11/11 modelos carregando, modelo aparecendo com a palma
+   visível, verso e punho escondendo, todas as teclas e o "← Voltar" parando a câmera
+   (track da câmera encerrado) e voltando ao HUD.
+
+### Anteriores (v1.0.16)
 
 Preparação para open source — 9 itens de polimento:
 

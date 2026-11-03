@@ -1904,6 +1904,17 @@ async function openSettings() {
       settings.continuousMinutes = Number(c.continuous_listen_minutes);
     }
   } catch { /* mantém */ }
+  // cidade do clima: vem do próprio backend, que é quem lê/grava no config.json
+  try {
+    const w = await fetch(`${BACKEND_URL}/weather/location`, { cache: 'no-store' }).then((r) => r.json());
+    const cityEl = $('#setWeatherCity');
+    if (cityEl) cityEl.value = w.configured_city || w.city || '';
+    const hint = $('#weatherCityHint');
+    if (hint) {
+      const origem = ({ manual: 'definida por você', config: 'vem do config.json', ip: 'detectada pelo IP (aproximada)', none: 'não detectada — informe a cidade' })[w.location_source] || '';
+      hint.textContent = [w.city ? `Agora: ${w.city}` : '', origem].filter(Boolean).join(' · ');
+    }
+  } catch { /* backend off: mantém o campo vazio */ }
   $('#setRate').value = settings.rate;
   $('#rateOut').textContent = `${Number(settings.rate).toFixed(2)}×`;
   $('#setPitch').value = settings.pitch;
@@ -2007,9 +2018,30 @@ $('#saveSettings').addEventListener('click', async () => {
   if (saved.tts_engine) settings.ttsEngine = saved.tts_engine;
   if (saved.tts_voice) settings.voice = saved.tts_voice;
   saveLocal();
+  // cidade do clima: o backend resolve cidade→lat/lon UMA vez (Nominatim) e grava no
+  // config.json com permissão 0600 — o /weather nunca consulta o Nominatim.
+  let weatherMsg = '';
+  const cityEl = $('#setWeatherCity');
+  const city = (cityEl ? cityEl.value : '').trim();
+  if (city) {
+    const wr = await fetch(`${BACKEND_URL}/weather/location`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ city }),
+    }).then((r) => r.json()).catch(() => ({}));
+    if (wr.ok) {
+      weatherMsg = ` · clima em ${wr.city}`;
+      if (cityEl) cityEl.value = wr.city;
+      const hint = $('#weatherCityHint');
+      if (hint) hint.textContent = `Agora: ${wr.city} · definida por você`;
+    } else {
+      weatherMsg = ` · clima NÃO salvo (${wr.error || 'backend fora do ar'})`;
+      pushEvent('err', 'Clima', String(wr.error || 'não consegui salvar a cidade').slice(0, 120));
+    }
+  }
   // aplica já o novo tempo (reinicia o timer se a escuta contínua estiver ativa)
   if (continuousListening) resetContinuousTimer();
-  $('#settingsMsg').textContent = '✔ Salvo.';
+  $('#settingsMsg').textContent = `✔ Salvo.${weatherMsg}`;
   const engineLabel = settings.ttsEngine === 'edge' ? 'Edge TTS' : 'Piper';
   pushEvent('ok', 'Configurações salvas', `${engineLabel} · voz ${settings.voice || 'padrão'} · velocidade ${settings.rate}×`);
   await refreshStatus();
@@ -2157,6 +2189,16 @@ if (vizRow) {
   });
 }
 
+/* ── modo AR: 📷 Ativar AR → public/ar.html em nova aba (webcam + modelo 3D na mão) ── */
+on('#arBtn', 'click', () => {
+  toast('Abrindo o modo AR...');
+  pushEvent('tool', 'Modo AR', 'câmera + modelo 3D na mão');
+  // nova aba (o normal); se o navegador bloquear o pop-up, abre na mesma aba —
+  // o "← Voltar" dentro da AR traz o HUD de volta
+  const aba = window.open('/ar.html', '_blank');
+  if (!aba) window.location.href = '/ar.html';
+});
+
 /* ── modo programador: 💻 Programar → /generate-code do backend ── */
 async function generateCode(prompt) {
   const clean = String(prompt || '').replace(/\s+/g, ' ').trim().slice(0, 500);
@@ -2231,8 +2273,12 @@ async function showWeather() {
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     const medido = fmtMeasured(j.medido_em);
-    $('#wxCity').textContent = j.cidade || '—';
-    $('#wxSrc').textContent = `${j.fonte || ''}${medido ? ' · ' + medido : ''}`;
+    // `city` é o nome novo do campo; `cidade` continua vindo para compatibilidade.
+    // `location_source` diz de onde veio a cidade (config manual, configuração ou IP).
+    const cidade = j.city || j.cidade || '—';
+    const origem = ({ manual: 'definida por você', config: 'config.json', ip: 'por IP (aproximada)' })[j.location_source] || '';
+    $('#wxCity').textContent = cidade;
+    $('#wxSrc').textContent = `${j.fonte || ''}${origem ? ' · ' + origem : ''}${medido ? ' · ' + medido : ''}`;
     $('#wxTemp').textContent = j.temp == null ? '—' : `${j.temp}°C`;
     $('#wxDesc').textContent = j.descricao || '';
     $('#wxFeels').textContent = j.sensacao == null ? '—' : `${j.sensacao}°C`;
@@ -2242,11 +2288,14 @@ async function showWeather() {
     const wxMeasured = $('#wxMeasured');
     if (wxMeasured) wxMeasured.textContent = medido ? `${medido} · ${j.fonte || ''}` : (j.fonte || '—');
     box.hidden = false;
-    pushEvent('ok', 'Clima', `${j.cidade}: ${j.temp}°C, ${j.descricao}${medido ? ` · medido às ${medido}` : ''}`);
+    pushEvent('ok', 'Clima', `${cidade}: ${j.temp}°C, ${j.descricao}${medido ? ` · medido às ${medido}` : ''}`);
   } catch (e) {
     box.hidden = true;
-    toast(`Clima indisponível: ${e.message || e}`);
-    pushEvent('err', 'Clima', String(e.message || e).slice(0, 120));
+    const msg = String(e.message || e);
+    // sem localização o backend pede a cidade: aponta onde configurar
+    const dica = /cidade/i.test(msg) ? ' (⚙ → Cidade do clima)' : '';
+    toast(`Clima indisponível: ${msg}${dica}`);
+    pushEvent('err', 'Clima', msg.slice(0, 120));
   }
 }
 $('#weatherBtn').addEventListener('click', () => {

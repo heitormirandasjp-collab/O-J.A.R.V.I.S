@@ -1,4 +1,4 @@
-# Segredos — NUNCA commitar
+# Segredos ??? NUNCA commitar
 .env
 jarvis.env
 api groq jarvis.env
@@ -28,3 +28,4 @@ build/
 exec_history.json
 security.log
 _test_real.wav
+config.json
