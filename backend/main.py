@@ -1686,12 +1686,23 @@ WEATHER_CITY = "São João do Paraíso"
 WEATHER_LAT = -15.377
 WEATHER_LON = -42.006
 WEATHER_IP_TIMEOUT = 2.0          # a geolocalização por IP nunca segura o /weather
+WEATHER_IP_DEADLINE = 4.0         # prazo total (IP + nome corrigido), não por chamada
+WEATHER_GEOCODE_TIMEOUT = 8.0     # cidade digitada nas configurações
 WEATHER_WTTR_URL = "https://wttr.in/{place}?format=j1&lang=pt"
+# geolocalização por IP: HTTP direto (ipwho.is, sem chave). Antes era o pacote
+# `whereismyip`, que não entrava no .exe e derrubava a detecção da cidade.
+WEATHER_IP_URL = "https://ipwho.is/?fields=success,city,region,country,latitude,longitude"
+# cidade → lat/lon: geocoding do próprio open-meteo (sem chave, HTTPS, ~100 ms).
+# Antes era geopy + Nominatim: dependia de um pacote que faltava no build, e o
+# Nominatim limita por IP ("não consegui consultar a cidade agora").
+WEATHER_GEOCODE_URL = (
+    "https://geocoding-api.open-meteo.com/v1/search?name={name}&count=5&language=pt&format=json"
+)
 WEATHER_OPEN_METEO_URL = (
     "https://api.open-meteo.com/v1/forecast"
     "?latitude={lat}&longitude={lon}"
     "&current=temperature_2m,relative_humidity_2m,weather_code,apparent_temperature,wind_speed_10m,wind_direction_10m"
-    "&daily=temperature_2m_max,temperature_2m_min&timezone=America/Sao_Paulo"
+    "&daily=temperature_2m_max,temperature_2m_min&timezone=auto"
 )
 
 
@@ -1739,20 +1750,58 @@ def _valid_latlon(lat: float | None, lon: float | None) -> bool:
 _IP_CACHE: dict[str, Any] = {"at": 0.0, "value": None, "ok": False}
 
 
-def _ip_lookup() -> dict[str, Any] | None:
-    """IP público → cidade aproximada (whereismyip, sem chave de API)."""
-    try:
-        r = requests.get("https://api.ipify.org", headers=UA, timeout=WEATHER_IP_TIMEOUT)
-        r.raise_for_status()
-        ip = r.text.strip()
-        if not re.fullmatch(r"[0-9a-fA-F:.]{3,45}", ip):
-            return None
-        import whereismyip  # type: ignore
+def _geo_label(res: dict[str, Any]) -> str:
+    """Nome bonito de um resultado de geocoding: "São Paulo, São Paulo", "Lisboa, PT"."""
+    name = str(res.get("name") or "").strip()
+    admin1 = str(res.get("admin1") or "").strip()
+    cc = str(res.get("country_code") or "").strip().upper()
+    if not name:
+        return ""
+    if admin1 and admin1.casefold() != name.casefold():
+        return f"{name}, {admin1}"[:80]
+    if cc and cc != "BR":
+        return f"{name}, {cc}"[:80]
+    return name[:80]
 
-        data = whereismyip.whereismyip_dict(
-            ip_address=ip, timeout=WEATHER_IP_TIMEOUT, attempts=1, cache_ttl=3600
+
+def _geocode_city(city: str, timeout: float = WEATHER_GEOCODE_TIMEOUT) -> dict[str, Any] | None:
+    """Cidade → nome corrigido + lat/lon (open-meteo geocoding; sem chave e sem pacote).
+
+    "São Paulo, SP" funciona: a busca usa o nome antes da vírgula (o sufixo com o
+    estado só atrapalharia o índice do open-meteo). Devolve None quando não acha.
+    """
+    raw = re.sub(r"\s+", " ", str(city or "")).strip()[:80]
+    if not raw:
+        return None
+    query = raw.split(",")[0].strip() or raw
+    try:
+        r = requests.get(
+            WEATHER_GEOCODE_URL.format(name=quote(query, safe="")), headers=UA, timeout=timeout
         )
+        r.raise_for_status()
+        results = (r.json() or {}).get("results") or []
     except Exception:  # noqa: BLE001
+        return None
+    for res in results if isinstance(results, list) else []:
+        if not isinstance(res, dict):
+            continue
+        lat, lon = _num(res.get("latitude")), _num(res.get("longitude"))
+        if not _valid_latlon(lat, lon):
+            continue
+        label = _geo_label(res) or raw
+        return {"city": label, "lat": float(lat), "lon": float(lon)}
+    return None
+
+
+def _ip_lookup() -> dict[str, Any] | None:
+    """IP público → cidade aproximada (ipwho.is, sem chave de API e por HTTPS)."""
+    try:
+        r = requests.get(WEATHER_IP_URL, headers=UA, timeout=WEATHER_IP_TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict) or data.get("success") is False:
         return None
     lat, lon = _num(data.get("latitude")), _num(data.get("longitude"))
     if not _valid_latlon(lat, lon):
@@ -1760,15 +1809,23 @@ def _ip_lookup() -> dict[str, Any] | None:
     city = str(data.get("city") or "").strip()
     region = str(data.get("region") or "").strip()
     label = ", ".join(p for p in (city, region) if p) or str(data.get("country") or "").strip()
+    # o IP costuma vir sem acento ("Sao Joao do Paraiso"): o geocoding devolve o nome
+    # certo e o centro da cidade (o IP só dá a região). Se falhar, fica o do IP.
+    if city:
+        pretty = _geocode_city(label, timeout=WEATHER_IP_TIMEOUT)
+        if pretty:
+            return {**pretty, "source": "ip"}
+    if not label:
+        return None
     return {"city": label[:80], "lat": float(lat), "lon": float(lon), "source": "ip"}
 
 
-def _weather_from_ip(timeout: float = WEATHER_IP_TIMEOUT) -> dict[str, Any] | None:
-    """Geolocalização por IP com PRAZO (2 s): estourou, o /weather segue sem ela.
+def _weather_from_ip(timeout: float = WEATHER_IP_DEADLINE) -> dict[str, Any] | None:
+    """Geolocalização por IP com PRAZO (4 s): estourou, o /weather segue sem ela.
 
-    Sucesso fica 30 min em cache (é uma chamada externa). Falha NÃO fica em cache: o
-    primeiro /weather logo após abrir o `.exe` pode esbarrar no import do whereismyip e
-    na rede fria — a próxima tentativa (que também espera no máximo 2 s) resolve.
+    Sucesso fica 30 min em cache (são chamadas externas). Falha NÃO fica em cache: o
+    primeiro /weather logo após abrir o `.exe` pode esbarrar em rede fria — a próxima
+    tentativa (que também espera no máximo 4 s) resolve.
     """
     if _IP_CACHE["ok"] and time.time() - float(_IP_CACHE["at"] or 0) < 1800:
         return _IP_CACHE["value"]
@@ -1968,23 +2025,25 @@ def weather_location_get():
 def weather_location_set(body: WeatherLocationIn):
     """Grava a cidade escolhida nas configurações.
 
-    O lat/lon é resolvido UMA vez aqui (geopy/Nominatim) e persistido no config.json —
-    o /weather nunca chama o Nominatim (rate limit do OSM).
+    O lat/lon é resolvido UMA vez aqui (geocoding do open-meteo) e persistido no
+    config.json — o /weather nunca geocodifica, só consulta coordenadas.
     """
     city = re.sub(r"\s+", " ", str(body.city or "")).strip()[:80]
     if not city:
         return JSONResponse({"error": "informe a cidade (ex.: São Paulo, SP)"}, status_code=400)
-    try:
-        from geopy.geocoders import Nominatim  # type: ignore
-
-        found = Nominatim(user_agent="JARVIS-local/1.0").geocode(city, timeout=8)
-    except Exception as exc:  # noqa: BLE001
-        _security_log("weather", f"geocodificação falhou ({city!r}): {type(exc).__name__}", blocked=True)
-        return JSONResponse({"error": f"não consegui consultar a cidade agora: {exc}"}, status_code=502)
-    lat, lon = _num(getattr(found, "latitude", None)), _num(getattr(found, "longitude", None))
-    if found is None or not _valid_latlon(lat, lon):
+    found = _geocode_city(city)
+    if not found:
         _security_log("weather", f"cidade não encontrada: {city!r}", blocked=True)
-        return JSONResponse({"error": f"não encontrei {city!r}"}, status_code=404)
+        return JSONResponse(
+            {
+                "error": f"não encontrei {city!r} — tente \"cidade, estado\" "
+                "(ex.: São Paulo, SP) ou confira a conexão"
+            },
+            status_code=404,
+        )
+    # nome resolvido (com acento) é o que aparece no HUD e nas configurações
+    city = str(found["city"] or city)
+    lat, lon = found["lat"], found["lon"]
     cfg = _read_config()
     cfg["weather_city"] = city
     cfg["weather_lat"] = round(float(lat), 4)

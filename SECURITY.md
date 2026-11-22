@@ -174,15 +174,15 @@ e do modo programador.
 - Servidor de arquivos estáticos (`app.py`) impede path traversal (`target` precisa estar
   dentro de `public/`).
 - O executável só escuta em `127.0.0.1`; nada é exposto na rede local.
-- **Clima (`v1.0.19`)** — `GET /weather` e `GET/POST /weather/location`:
-  - a cidade vem do `config.json`; sem ela, a **geolocalização por IP** (`whereismyip`) roda
-    numa thread com **prazo de 2 s** — o endpoint nunca fica pendurado na rede;
+- **Clima (`v1.0.19`, ajustado na `v1.0.20`)** — `GET /weather` e `GET/POST /weather/location`:
+  - a cidade vem do `config.json`; sem ela, a **geolocalização por IP** (`ipwho.is`) roda
+    numa thread com **prazo de 4 s** — o endpoint nunca fica pendurado na rede;
   - o `POST /weather/location` só escreve as chaves `weather_city`/`weather_lat`/`weather_lon`/
     `weather_source` (nada de caminho, comando ou chave de API vindo do cliente), com
     `chmod 0600` igual ao resto do `config.json`; a cidade é limitada a 80 caracteres e o
-    lat/lon vem do Nominatim, validado em faixa (`-90..90`, `-180..180`);
-  - o Nominatim (geopy) é consultado **uma vez**, ao salvar — nunca a cada request de clima
-    (rate limit do OSM) e só com a cidade que o usuário digitou;
+    lat/lon vem do geocoding do open-meteo, validado em faixa (`-90..90`, `-180..180`);
+  - o geocoding é consultado **uma vez**, ao salvar — nunca a cada request de clima, e só com
+    a cidade que o usuário digitou (sem chave, HTTPS, sem pacote extra);
   - **privacidade**: o `security.log` registra só a cidade pública e a origem
     (`cidade=..., origem=...`) — **lat/lon nunca** são logados;
   - sem localização nenhuma, o `/weather` responde `needs_city` e o JARVIS **pergunta** a

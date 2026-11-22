@@ -297,6 +297,7 @@ body.focus-mode-active .talkbar { opacity: 0; pointer-events: none; }
 .wave {
   display: flex; align-items: center; gap: 3px;
   height: 24px;
+  flex: 0 0 24px;   /* sem isto o flex do painel de voz esmagava a barra para 0px */
   padding: 0 8px;
   margin: 2px 0 6px;
   opacity: 0.5;
@@ -308,8 +309,9 @@ body.focus-mode-active .talkbar { opacity: 0; pointer-events: none; }
   background: linear-gradient(to top, rgba(220, 214, 200, 0.14), var(--bone-dim));
   transform-origin: center;
   transform: scaleY(0.22);
-  animation: barPulse 1.4s var(--ease-in-out) infinite alternate;
 }
+/* barras da voz: a altura vem do áudio real (app.js), sem animação de CSS parada */
+.eq i { animation: barPulse 1.4s var(--ease-in-out) infinite alternate; }
 .wave i { flex: 1; min-width: 1px; }
 
 .voice-label {
@@ -734,9 +736,10 @@ select option { background: var(--surface-2); color: var(--text); }
   width: 100%; height: 100%; display: block;
   background: var(--void);
   touch-action: none;            /* arrastar a massa não rola a página */
-  transition: filter 500ms var(--ease-out);
 }
-#globe.speaking { filter: drop-shadow(0 0 26px rgba(255, 255, 255, 0.22)); }
+/* Sem filter no canvas: um drop-shadow aqui obriga o navegador a re-borrar um
+   canvas WebGL animado a cada quadro, e era isso que travava a bola enquanto
+   ele falava. O halo da própria cena (passe aditivo) faz esse brilho. */
 
 .stage-meta {
   position: absolute;
@@ -813,7 +816,6 @@ select option { background: var(--surface-2); color: var(--text); }
   border-color: rgba(255, 255, 255, 0.4);
   box-shadow: 0 0 22px rgba(255, 255, 255, 0.12);
 }
-.talk-pill.playing .tp-wave i { animation-duration: 0.55s; }
 .tp-text { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.25; min-width: 0; }
 .tp-text b { font-size: 12.5px; font-weight: 600; letter-spacing: 0.01em; color: var(--text); }
 .tp-text small { font-size: 11.5px; color: var(--faint); }

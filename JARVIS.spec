@@ -25,11 +25,10 @@ hiddenimports += collect_submodules('aiohttp')
 tmp_ret = collect_all('tokenizers')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 hiddenimports += collect_submodules('tqdm')
-# Clima (v1.0.19): `backend/main.py` entra como DADO (importlib no launcher.py), então o
-# PyInstaller NÃO analisa os imports dele — geopy/whereismyip só entram se declarados aqui.
-tmp_ret = collect_all('geopy')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-hiddenimports += collect_submodules('whereismyip')
+# Clima: sem dependência própria. A geocodificação (cidade → lat/lon) e a detecção
+# por IP usam `requests` direto no open-meteo/ipwho.is — antes eram geopy/Nominatim e
+# whereismyip, que faltavam no build e faziam "não consegui consultar a cidade agora"
+# e "não consegui detectar sua localização" no .exe.
 
 # ── voz do Piper (v1.0.19) ─────────────────────────────────────────────
 # O `.onnx` da voz NÃO é biblioteca: sem ele o Piper simplesmente não existe no `.exe`

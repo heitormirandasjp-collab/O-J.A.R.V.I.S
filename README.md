@@ -95,7 +95,7 @@ Tudo fica em **`config.json`**, na raiz do projeto (no `.exe`, em
 | `tts_voice` | voz: arquivo `.onnx` (Piper) ou ShortName (Edge) | `pt_BR-cadu-medium.onnx` |
 | `continuous_listen_minutes` | minutos de escuta contínua após o wake word (`0` = infinito) | `5` |
 | `weather_city` | cidade do clima (⚙ → *Cidade do clima*) | vazio = detecta por IP |
-| `weather_lat` · `weather_lon` | coordenadas resolvidas **uma vez** ao salvar a cidade (geopy/Nominatim) | vazio = detecta por IP |
+| `weather_lat` · `weather_lon` | coordenadas resolvidas **uma vez** ao salvar a cidade (geocoding do open-meteo) | vazio = detecta por IP |
 | `weather_source` | `manual` quando a cidade veio do campo nas configurações | vazio = `config` |
 
 **Primeira vez (clone novo)**: copie o template versionado e preencha a chave:
@@ -584,7 +584,7 @@ Quando o Comandante pede notícias, o JARVIS **não lê os títulos crus** — e
 | `GET /stocks?symbols=PETR4,AAPL` | brapi.dev (BR) + Yahoo (US) |
 | `GET /currencies` | USD/BRL, EUR/BRL, USD/EUR |
 | `GET /weather` | clima + previsão de hoje da cidade configurada (`config.json`) ou detectada por IP (open-meteo primário; wttr.in reserva) |
-| `GET /weather/location` · `POST /weather/location` | cidade do clima em uso · grava `{ "city" }` resolvendo lat/lon uma vez (geopy) |
+| `GET /weather/location` · `POST /weather/location` | cidade do clima em uso · grava `{ "city" }` resolvendo lat/lon uma vez (geocoding do open-meteo) |
 | `POST /memory/add` | `{ "text", "source" }` → memória persistente (sanitizada) |
 | `GET /memory/search?q=...&n=5` | busca semântica nas memórias |
 | `GET /memory/list?limit=100` | memórias mais recentes primeiro |
@@ -707,14 +707,20 @@ todo mundo. Agora o `/weather` resolve a cidade nesta ordem:
 |---|---|---|
 | **1º** | `weather_city` + `weather_lat` + `weather_lon` salvas pelo campo **"Cidade do clima"** (⚙) | `manual` |
 | 2º | as mesmas chaves escritas à mão no `config.json` | `config` |
-| 3º | **geolocalização por IP** (`whereismyip`, sem chave) — com **prazo de 2 s**; VPN/CGNAT/sem internet → segue | `ip` |
+| 3º | **geolocalização por IP** (`ipwho.is`, sem chave) — com **prazo de 4 s**; VPN/CGNAT/sem internet → segue | `ip` |
 | 4º | nada disso: **não inventa** — devolve `needs_city: true` e o JARVIS pergunta *"Qual é a sua cidade?"* | `none` |
 
-- O **Nominatim (geopy)** é chamado **uma única vez**, quando a cidade é salva
-  (`POST /weather/location`); o lat/lon vai para o `config.json` (**0600**, a mesma regra do
-  app.py) e o `/weather` só lê o arquivo — nada de consultar o OSM a cada clique.
-- A ideia da geolocalização por IP roda numa thread com **prazo de 2 s** (sucesso fica 30 min
-  em cache, falha 60 s): o clima nunca fica pendurado esperando a rede.
+- O **geocoding do open-meteo** (`geocoding-api.open-meteo.com`, sem chave) é chamado **uma
+  única vez**, quando a cidade é salva (`POST /weather/location`); o nome resolvido (com
+  acento) e o lat/lon vão para o `config.json` (**0600**, a mesma regra do app.py) e o
+  `/weather` só lê o arquivo — nada de geocodificar a cada clique.
+- A ideia da geolocalização por IP roda numa thread com **prazo de 4 s** (sucesso fica 30 min
+  em cache, falha não fica): o clima nunca fica pendurado esperando a rede.
+- **Corrigido na v1.0.20** — `geopy` e `whereismyip` não existiam no `.exe` (o PyInstaller
+  não analisa o `backend/main.py`, que entra como dado), então a cidade digitada respondia
+  `"não consegui consultar a cidade agora: No module named 'geopy'"` e o clima por IP caía em
+  `needs_city`. As duas coisas agora são **HTTP direto** no `requests`, sem pacote extra. Ver
+  **"Mudanças recentes (v1.0.20)"**.
 - **Privacidade**: o `security.log` registra só `cidade=..., origem=...` — **nunca** lat/lon.
 - Quem já usava o app **não quebra**: o `config.json` existente foi semeado com as coordenadas
   antigas e continua em São João do Paraíso (`location_source: config`) até a cidade ser
@@ -810,6 +816,11 @@ por inteiro (ver **"Mudanças recentes (v1.0.14)"**). O `vertexShader` das part�
 **só do pulso** (respiração e voz) — nenhuma deformação de vértice, em shader nenhum. As
 **5.000 partículas**, suas posições de repouso (`BufferGeometry` + `aPhase`), a rotação, a
 inércia, o zoom, os três anéis e a explosão do wake word ficaram **intactos**.
+
+**Desempenho (v1.0.20)** — o globo não engasga mais quando ele fala: o `filter: drop-shadow` do
+canvas (e a `transition: filter`) saiu, o pixel ratio caiu para no máximo **1.5** com degrau
+adaptativo, todo amortecimento virou `k60(dt)` e o wobble da fala tem relógio próprio. Detalhes
+e as medições em **"Mudanças recentes (v1.0.20)"**.
 
 **Cinema (v1.0.10)** — dois efeitos novos, ambos ligados ao contexto:
 
@@ -1052,6 +1063,77 @@ e tudo passa por validação no backend. Resumo do que foi endurecido:
 
 Detalhes completos, exemplos de log e as variáveis de ambiente para estender as proteções
 estão em **[SECURITY.md](SECURITY.md)**.
+
+## Mudanças recentes (v1.0.20)
+
+Duas frentes: o **globo que engasgava enquanto ele falava** e o **clima que não achava a
+cidade** no `.exe`.
+
+### 1. Globo mais leve (o travamento ao falar)
+
+A causa raiz estava no CSS, não no Three.js:
+
+- **`filter: drop-shadow` no canvas** (`#globe.speaking`, com `transition: filter 500ms`): um
+  filtro CSS num canvas WebGL animado obriga o navegador a re-rasterizar e re-borrar o canvas
+  **inteiro a cada quadro** — e ele ligava justo quando o JARVIS começava a falar, ou seja, no
+  momento em que o quadro já estava mais pesado (voz → partículas pulsando). O filtro saiu e o
+  brilho da fala agora vem do **halo aditivo da própria cena**: visual igual, sem custo de
+  composição.
+- **`PR_CAP = 1.5`** (era 2) + **degrau adaptativo** `prScale`: a nuvem são pontos aditivos
+  grandes que se sobrepõem, então o custo de GPU cresce ~com o **quadrado** do pixel ratio. Em
+  tela HiDPI o limite 2 dobrava o trabalho sem ganho visível. O `prScale` cai sozinho quando o
+  quadro pesa (piso 0,75) e volta devagar.
+- **`k60()` — tudo em função do `dt`**: todo amortecimento (brilho do núcleo, zoom, retorno ao
+  centro) usa `1 - (1 - k)^(dt × 60)`. Antes o valor era fixo por quadro, então a velocidade do
+  movimento mudava com o fps (60/144/240 Hz); agora é a mesma em qualquer taxa.
+- **`uDentOn` no shader**: o laço de covas (deformação) rodava o raio inteiro para depois
+  descobrir que não havia cova nenhuma; o uniforme agora corta o laço
+  (`if (i >= uDentOn) break;`).
+- **`uTalkTime` separado de `uTime`**: a fase do wobble da fala vivia no relógio da cena, então
+  começar/parar de falar reiniciava a ondulação. Agora tem acumulador próprio e é
+  **proporcional a `uVoice`** (sem voz, sem wobble).
+- **hover com limite**: o raycast do `pointermove` roda no máximo a cada **90 ms**
+  (`lastHoverCheck`), em vez de a cada evento do mouse.
+- **CSS das barras de voz**: a animação `barPulse` rodava em todas as barras do HUD, paradas ou
+  não, e passou para `.eq i` (só as da voz, com a altura vinda do áudio real); `.wave` ganhou
+  `flex: 0 0 24px` porque o flex do painel esmagava a barra para 0 px.
+
+**Medido** no Edge real (AMD RX 580 / D3D11, janela 1280×800, medição por CDP): **~178 fps**
+com p95 de **5,7 ms** e **nenhum quadro acima de 33 ms**, tanto em repouso quanto falando;
+`globo ok: true` e console sem erros. O ganho visual do filtro só se confirma no app
+instalado — a janela `--app=` do Edge usada na medição não compõe da mesma forma.
+
+### 2. Clima: previsão e cidade de volta no `.exe`
+
+O HUD mostrava literalmente
+`{"error":"não consegui consultar a cidade agora: No module named 'geopy'"}` e o `/weather`
+respondia `needs_city`, porque `import whereismyip` também falhava. Os dois pacotes estavam no
+`requirements.txt`, mas **não no build** — e o `JARVIS.spec` precisava declará-los à mão porque
+`backend/main.py` entra como **dado** (o PyInstaller não lê os imports dele).
+
+Troca por **HTTP direto**, sem chave e sem pacote novo:
+
+| Antes | Agora | Cliente |
+|---|---|---|
+| `geopy` + Nominatim (cidade → lat/lon) | **geocoding do open-meteo** (`/v1/search`) | `requests` |
+| `whereismyip` (IP → cidade) | **ipwho.is** (`?fields=success,city,region,country,latitude,longitude`) | `requests` |
+
+- `POST /weather/location` devolve o **nome resolvido**: `sao paulo, sp` → **São Paulo**
+  (`-23.5475, -46.6361`); cidade inexistente → **404** com dica (*"não encontrei 'xkcdqwzz' —
+  tente \"cidade, estado\""*); campo vazio → **400** (*"informe a cidade"*). A busca usa só o
+  nome antes da vírgula, então o sufixo do estado não atrapalha o índice.
+- A detecção por IP **corrige o nome**: o IP devolve `Sao Joao do Paraiso` (sem acento) e o
+  geocoding devolve **São João do Paraíso, Minas Gerais** com o centro da cidade — o `/weather`
+  responde `location_source: "ip"` e o HUD mostra o nome certo. Se o geocoding falhar, o nome
+  do IP é usado como está.
+- **`timezone=auto`** no forecast do open-meteo (era `America/Sao_Paulo` fixo): fora do Brasil o
+  `medido_em`, a máxima e a mínima vinham no fuso errado.
+- `backend/requirements.txt` e `JARVIS.spec` **não citam mais** `geopy`/`whereismyip`: o próximo
+  build não depende de pacote que não esteja instalado.
+
+Testado no servidor real (porta 8765): `GET /weather` com cidade do config, com cidade manual e
+**por IP**; `GET /weather/location` nos dois estados (`config`/`manual` e `ip`); e os três casos
+de erro do `POST`.
 
 ## Mudanças recentes (v1.0.19)
 

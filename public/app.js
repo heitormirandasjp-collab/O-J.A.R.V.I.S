@@ -318,6 +318,25 @@ function audioLevel() {
   return 0;
 }
 
+/** Espectro atual (0..255 por bin) da fonte ativa: usado pelas barras da voz. */
+let spectrumData = null;
+function audioSpectrum() {
+  let node = null;
+  if (window.isSpeaking) node = ttsAnalyser;
+  else if (window.isListening) node = micAnalyser;
+  const ac = audioCtx;
+  if (!node || !ac || ac.state !== 'running') return null;
+  try {
+    if (!spectrumData || spectrumData.length !== node.frequencyBinCount) {
+      spectrumData = new Uint8Array(node.frequencyBinCount);
+    }
+    node.getByteFrequencyData(spectrumData);
+    return spectrumData;
+  } catch {
+    return null;
+  }
+}
+
 /* libera o AudioContext no primeiro gesto do usuário (política dos navegadores) */
 for (const evName of ['pointerdown', 'keydown']) {
   addEventListener(evName, () => {
@@ -330,7 +349,9 @@ for (const evName of ['pointerdown', 'keydown']) {
    devolve o volume com um balanço curto. Nada de textura nem malha triangular:
    as partículas continuam sendo o material do desenho. */
 function globeThree(c) {
-  const renderer = new THREE.WebGLRenderer({ canvas: c, alpha: false, antialias: true });
+  const renderer = new THREE.WebGLRenderer({
+    canvas: c, alpha: false, antialias: true, powerPreference: 'high-performance',
+  });
   renderer.setClearColor(0x000000, 1);
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
@@ -412,6 +433,9 @@ function globeThree(c) {
     uDentAmp: { value: new Float32Array(4) },
     uDentRad: { value: new Float32Array(4) },
     uDentPull: { value: new Float32Array(12) },
+    /* quantas covas estão de fato ativas: sem isso o shader percorria as 4 e
+       avaliava 4 exp() por vértice mesmo com a bola em repouso */
+    uDentOn: { value: 0 },
   };
 
   const DEFORM = `
@@ -419,11 +443,23 @@ function globeThree(c) {
       uniform float uDentAmp[4];
       uniform float uDentRad[4];
       uniform vec3 uDentPull[4];
+      uniform int uDentOn;
+
+      /* Respiração da fala: só existe com uVoice > 0, então em repouso a malha
+         fica exatamente como foi aprovada. tt é um relógio próprio, que anda
+         mesmo no reduced-motion (o balanço de repouso usa uTime, que congela). */
+      vec3 wobble(vec3 p, float y, float seed, float tt, float talk) {
+        if (talk <= 0.001) return p;
+        float amp = talk * (0.048 * sin(tt * 6.4 + seed * 6.2832)
+                          + 0.030 * sin(y * 7.0 - tt * 4.6 + seed * 1.7));
+        return p * (1.0 + amp);
+      }
 
       vec3 deform(vec3 base) {
         float amp = 0.0;
         vec3 pull = vec3(0.0);
         for (int i = 0; i < 4; i++) {
+          if (i >= uDentOn) break;
           float r = uDentRad[i];
           if (r <= 0.0001) continue;
           vec3 d = base - uDentPos[i];
@@ -440,12 +476,14 @@ function globeThree(c) {
   const mat = new THREE.ShaderMaterial({
     uniforms: Object.assign({
       uTime: { value: 0 },
+      uTalkTime: { value: 0 },
       uVoice: { value: 0 },
       uScale: { value: 900 },
     }, dentUniforms),
     vertexShader: `
       attribute float aRand;
       uniform float uTime;
+      uniform float uTalkTime;
       uniform float uVoice;
       uniform float uScale;
       ${DEFORM}
@@ -455,8 +493,8 @@ function globeThree(c) {
       varying float vDepth;
       void main() {
         vec3 base = normalize(position);
-        vec3 p = deform(base);
-        p *= 1.0 + 0.004 * sin(uTime * 0.9) + 0.010 * uVoice * sin(uTime * 3.2 + aRand * 6.2832);
+        vec3 p = wobble(deform(base), base.y, aRand, uTalkTime, uVoice);
+        p *= 1.0 + 0.004 * sin(uTime * 0.9);
 
         /* normal por diferenças finitas na própria deformação: o caroço pega luz
            na encosta em vez de virar um decalque chapado na silhueta */
@@ -464,8 +502,10 @@ function globeThree(c) {
         vec3 t1 = normalize(cross(up, base));
         vec3 t2 = cross(base, t1);
         float eps = 0.035;
-        vec3 pa = deform(normalize(base + t1 * eps));
-        vec3 pb = deform(normalize(base + t2 * eps));
+        vec3 na = normalize(base + t1 * eps);
+        vec3 nb = normalize(base + t2 * eps);
+        vec3 pa = wobble(deform(na), na.y, aRand, uTalkTime, uVoice);
+        vec3 pb = wobble(deform(nb), nb.y, aRand, uTalkTime, uVoice);
         vec3 nrm = normalize(cross(pa - p, pb - p));
         if (dot(nrm, base) < 0.0) nrm = -nrm;
 
@@ -528,22 +568,26 @@ function globeThree(c) {
     uniforms: Object.assign({
       uScale: mat.uniforms.uScale,
       uVoice: mat.uniforms.uVoice,
+      uTalkTime: mat.uniforms.uTalkTime,
     }, dentUniforms),
     vertexShader: `
       uniform float uScale;
       uniform float uVoice;
+      uniform float uTalkTime;
       attribute float aRand;
       ${DEFORM}
       varying float vA;
       void main() {
         vec3 base = normalize(position);
-        vec3 p = deform(base);
+        vec3 p = wobble(deform(base), base.y, aRand, uTalkTime, uVoice);
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         vec3 n = normalize(normalMatrix * base);
         float key = max(dot(n, normalize(vec3(-0.50, 0.62, 0.60))), 0.0);
         float fill = max(dot(n, normalize(vec3(0.68, -0.34, 0.40))), 0.0);
         float depth = max(-mv.z, 0.05);
-        vA = (0.10 + 0.72 * key + 0.18 * fill) * (0.90 + 0.30 * uVoice);
+        /* o halo faz o papel do antigo drop-shadow do CSS, que re-borrava o
+           canvas inteiro a cada quadro enquanto ele falava */
+        vA = (0.10 + 0.72 * key + 0.18 * fill) * (0.90 + 0.90 * uVoice);
         float size = (0.028 + 0.013 * aRand) * (1.0 + 0.10 * uVoice);
         gl_PointSize = clamp(uScale * size / depth, 3.0, 96.0);
         gl_Position = projectionMatrix * mv;
@@ -572,16 +616,17 @@ function globeThree(c) {
   /* Camada de fios: a malha propriamente dita. Só o hemisfério voltado para a
      câmera aparece, senão a rede de trás atravessa a da frente e vira moiré. */
   const netMat = new THREE.ShaderMaterial({
-    uniforms: Object.assign({ uVoice: mat.uniforms.uVoice }, dentUniforms),
+    uniforms: Object.assign({ uVoice: mat.uniforms.uVoice, uTalkTime: mat.uniforms.uTalkTime }, dentUniforms),
     vertexShader: `
       attribute float aRand;
       uniform float uVoice;
+      uniform float uTalkTime;
       ${DEFORM}
       varying float vF;
       varying float vR;
       void main() {
         vec3 base = normalize(position);
-        vec3 p = deform(base);
+        vec3 p = wobble(deform(base), base.y, aRand, uTalkTime, uVoice);
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         vec3 n = normalize(normalMatrix * base);
         float face = dot(n, normalize(-mv.xyz));
@@ -712,8 +757,14 @@ function globeThree(c) {
     lastInput = performance.now();
   }
 
+  let lastHoverCheck = 0;
   function onMove(e) {
     if (!grab) {
+      /* sem arrasto, só o cursor muda: testar o raio em cada pointermove
+         (getBoundingClientRect + unproject + alocação) travava o movimento */
+      const now = performance.now();
+      if (now - lastHoverCheck < 90) return;
+      lastHoverCheck = now;
       host.style.cursor = pick(e.clientX, e.clientY) ? 'grab' : 'default';
       return;
     }
@@ -761,10 +812,18 @@ function globeThree(c) {
     lastInput = performance.now();
   }, { passive: false });
 
+  /* A nuvem é feita de pontos aditivos grandes que se sobrepõem: o custo de GPU
+     cresce com o quadrado do pixel ratio. Em tela HiDPI o limite antigo de 2
+     dobrava esse trabalho sem ganho visível — 1.5 mantém o grão. */
+  const PR_CAP = 1.5;
+  let prScale = 1;                 /* degrau adaptativo: cai se o quadro pesar */
+  function internalDpr() {
+    return Math.max(0.75, Math.min(devicePixelRatio || 1, PR_CAP) * prScale);
+  }
   function resize() {
     const w = Math.max(1, host.clientWidth);
     const h = Math.max(1, host.clientHeight);
-    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const dpr = internalDpr();
     renderer.setPixelRatio(dpr);
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
@@ -786,16 +845,26 @@ function globeThree(c) {
   const uPull = dentUniforms.uDentPull.value;
   let glow = 0;
   let prev = 0;
+  let talkTime = 0;            /* relógio da fala, independente do reduced-motion */
+  let slowFrames = 0;
+  let fastFrames = 0;
+  let lastQualityChange = 0;
   (function loop(t) {
+    requestAnimationFrame(loop);
+    /* janela coberta/minimizada: não gasta GPU desenhando o que ninguém vê */
+    if (document.hidden) { prev = 0; return; }
     t = t || 0;
     const dt = prev ? Math.min(0.033, Math.max(0.0005, (t - prev) * 0.001)) : 0.016;
     prev = t;
 
     const level = audioLevel();   /* 0..1: voz do JARVIS (TTS) ou do usuário (mic) */
     const target = Math.max(level, window.isSpeaking ? 0.55 : 0);
-    glow += (target - glow) * (target > glow ? 0.18 : 0.04);
+    /* amaciamento normalizado por tempo: o mesmo resultado em 60 Hz ou 180 Hz */
+    const k60 = (k) => 1 - Math.pow(1 - k, dt * 60);
+    glow += (target - glow) * k60(target > glow ? 0.18 : 0.04);
     const still = reducedMotion.matches;
 
+    let dentOn = 0;
     for (let i = 0; i < MAXD; i++) {
       const d = dents[i];
       if (d.rad > 0) stepDent(d, dt);
@@ -803,22 +872,53 @@ function globeThree(c) {
       uAmp[i] = d.amp;
       uRad[i] = d.rad;
       uPull[i * 3] = d.pull.x; uPull[i * 3 + 1] = d.pull.y; uPull[i * 3 + 2] = d.pull.z;
+      if (d.rad > 0) dentOn = i + 1;
+    }
+    dentUniforms.uDentOn.value = dentOn;
+
+    /* Resolução interna adaptativa: quadro acima de ~26 ms por tempo seguido
+       (GPU fraca, muitos pontos na tela) desce um degrau de pixel ratio; com
+       folga sobrando, volta a subir — sempre com histerese para não oscilar. */
+    if (dt > 0.026) { slowFrames++; fastFrames = 0; }
+    else if (dt < 0.0146) { fastFrames++; slowFrames = 0; }
+    if (slowFrames > 40 && prScale > 0.72 && t - lastQualityChange > 1200) {
+      prScale = Math.max(0.7, prScale - 0.16);
+      resize();
+      slowFrames = 0;
+      lastQualityChange = t;
+    } else if (fastFrames > 260 && prScale < 1 && t - lastQualityChange > 3000) {
+      prScale = Math.min(1, prScale + 0.08);
+      resize();
+      fastFrames = 0;
+      lastQualityChange = t;
     }
 
-    /* giro só quando a mão está livre: com o dedo na massa ela fica parada */
+    /* giro só quando a mão está livre: com o dedo na massa ela fica parada.
+       A velocidade é por segundo (não por quadro), então num monitor de
+       180 Hz a esfera não gira três vezes mais rápido que a 60 Hz. */
     if (!grab && !still) {
-      group.rotation.y += 0.00045 + glow * 0.006;
+      group.rotation.y += (0.027 + glow * 0.36) * dt;
     }
     if (performance.now() - lastInput > 3000) {
-      targetZoom += (HOME - targetZoom) * 0.05;
+      targetZoom += (HOME - targetZoom) * k60(0.05);
     }
-    zoom += (targetZoom - zoom) * 0.09;
+    zoom += (targetZoom - zoom) * k60(0.09);
     camera.position.z = zoom;
 
+    /* a bola respira junto com a fala: superfície (shader) + volume (grupo) */
+    talkTime += dt;
+    if (glow > 0.002) {
+      group.scale.setScalar(1 + 0.030 * glow * Math.sin(talkTime * 5.2));
+      group.rotation.z = 0.014 * glow * Math.sin(talkTime * 3.1);
+    } else if (group.scale.x !== 1 || group.rotation.z !== 0) {
+      group.scale.setScalar(1);
+      group.rotation.z = 0;
+    }
+
     mat.uniforms.uTime.value = still ? 0 : t * 0.001;
+    mat.uniforms.uTalkTime.value = talkTime;
     mat.uniforms.uVoice.value = glow;
     renderer.render(scene, camera);
-    requestAnimationFrame(loop);
   })(0);
 }
 
@@ -1006,7 +1106,12 @@ function setCoreMode(mode, revertMs = 0) {
     ctx.stroke();
   }
 
-  (function loop() {
+  let lastDraw = 0;
+  (function loop(t) {
+    requestAnimationFrame(loop);
+    /* o histórico muda devagar: 12 fps bastam e poupam CPU/GPU a cada frame */
+    if (document.hidden || t - lastDraw < 80) return;
+    lastDraw = t || 0;
     if (!w) init();
     ctx.clearRect(0, 0, w, h);
     if (state.cpuHist.length || state.ramHist.length) {
@@ -1029,23 +1134,63 @@ function setCoreMode(mode, revertMs = 0) {
       ctx.font = '11px "Segoe UI", system-ui, sans-serif';
       ctx.fillText('coletando dados reais...', 8, h / 2);
     }
-    requestAnimationFrame(loop);
   })();
 })();
 
 /* ── ondas ─────────────────────────────────────── */
+/* barras da voz: a altura de cada barra vem do áudio real (TTS ou microfone).
+   Em repouso não há animação nem escrita por frame (antes eram 29 animações de
+   CSS rodando para sempre, sem relação com o som). */
 (function waves() {
+  const bars = [];
   function build(el, count) {
     if (!el) return;
-    for (let i = 0; i < count; i++) {
-      const b = document.createElement('i');
-      b.style.animationDelay = `${(i * 0.09) % 1.1}s`;
-      b.style.animationDuration = `${0.8 + (i % 5) * 0.13}s`;
-      el.appendChild(b);
-    }
+    for (let i = 0; i < count; i++) bars.push(el.appendChild(document.createElement('i')));
   }
   build($('#sideWave'), 20);
   build($('#pillWave'), 9);
+  if (!bars.length) return;
+
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  const total = bars.length;
+  let painted = false;    // há alturas aplicadas por JS?
+  let lastPaint = 0;
+
+  function paint(t) {
+    requestAnimationFrame(paint);
+    const active = window.isSpeaking || window.isListening;
+    /* com movimento reduzido a barra não oscila à toa, mas continua mostrando o nível
+       real do áudio (é informação, como o brilho da bola) */
+    const spec = active ? audioSpectrum() : null;
+    if (!spec && (!active || reduced.matches)) {
+      if (painted) {
+        for (const b of bars) b.style.transform = '';
+        painted = false;
+      }
+      return;
+    }
+    if (t - lastPaint < 33) return;   // ~30 fps basta para a barra
+    lastPaint = t;
+    painted = true;
+    for (let i = 0; i < total; i++) {
+      let v;
+      if (spec) {
+        /* a voz vive nas frequências baixas/médias: curva logarítmica para a barra
+           não ficar toda espremida nas primeiras posições */
+        const pos = Math.pow(i / (total - 1 || 1), 1.5) * (spec.length * 0.33);
+        const from = Math.floor(pos);
+        const to = Math.min(spec.length - 1, from + 2);
+        let peak = 0;
+        for (let k = from; k <= to; k++) if (spec[k] > peak) peak = spec[k];
+        v = Math.pow(peak / 255, 0.85);   // realça a fala baixa sem estourar
+      } else {
+        /* áudio ainda sem analisador (contexto suspenso): ondulação suave de reserva */
+        v = 0.18 + 0.3 * Math.abs(Math.sin(t / 380 + i * 0.62));
+      }
+      bars[i].style.transform = `scaleY(${(0.14 + 0.86 * Math.min(1, v)).toFixed(3)})`;
+    }
+  }
+  requestAnimationFrame(paint);
 })();
 
 /* ── gauges (valores reais) ────────────────────── */
@@ -1300,9 +1445,11 @@ function updateWakeUI() {
 let currentAudio = null;
 let currentEngine = 'piper';   // motor que de fato sintetizou a última fala (X-Engine)
 let isSpeaking = false;
+let speechEndedAt = 0;   // fim da última fala do JARVIS (filtro anti-eco)
 const GLOBE = $('#globe');
 
 function setSpeaking(on) {
+  if (!on && isSpeaking) speechEndedAt = Date.now();
   isSpeaking = on;
   window.isSpeaking = on;   // o globo lê este flag para escolher a fonte de áudio
   if (GLOBE) GLOBE.classList.toggle('speaking', on);
@@ -1333,18 +1480,30 @@ function fetchTts(text, engine) {
   });
 }
 
+let speakSeq = 0;
 async function speak(text) {
   const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 700);
   if (!clean) return;
+  /* cada fala é identificada: se outra chegar durante a síntese, esta é descartada.
+     Antes, duas chamadas próximas esperavam o fetch e tocavam as duas (voz duplicada). */
+  const seq = ++speakSeq;
+  if (currentAudio) {
+    try { currentAudio.pause(); } catch { /* ignora */ }
+    currentAudio = null;
+    isSpeaking = false;
+    window.isSpeaking = false;
+  }
   try {
     const engine = ttsEngine();
     let r = await fetchTts(clean, engine);
+    if (seq !== speakSeq) return;   // outra fala já assumiu: esta não toca
     if (!r.ok || !r.body) {
       // reserva: o outro motor (Piper local ↔ Edge TTS na nuvem) — o JARVIS nunca fica mudo
       const other = engine === 'piper' ? 'edge' : 'piper';
       pushEvent('warn', engine === 'piper' ? 'Piper indisponível' : 'Edge TTS indisponível',
         other === 'edge' ? 'tentando o Edge TTS (neural)' : 'tentando a voz local (Piper)');
       r = await fetchTts(clean, other);
+      if (seq !== speakSeq) return;
     }
     if (!r.ok) {
       let detail = String(r.status);
@@ -1354,7 +1513,7 @@ async function speak(text) {
       return;
     }
     const blob = await r.blob();
-    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+    if (seq !== speakSeq) return;   // chegou tarde: a fala atual manda
     currentEngine = r.headers.get('X-Engine') || engine;
     window.__jarvisTtsEngine = currentEngine;
     currentAudio = new Audio(URL.createObjectURL(blob));
@@ -1463,6 +1622,8 @@ function stopContinuousListening() {
 /* Filtro anti-eco: ignora o que o próprio JARVIS acabou de falar (TTS no ar). */
 let lastSpokenText = '';
 let lastSpokenAt = 0;
+let lastDispatchText = '';
+let lastDispatchAt = 0;
 
 function _foldForCompare(s) {
   return String(s || '')
@@ -1547,7 +1708,10 @@ function restartRecognition() {
 
 function audioBeep() {
   try {
-    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    /* reaproveita o AudioContext único: criar um por bipe esgotava o limite do navegador */
+    const ac = ensureAudioCtx();
+    if (!ac) return;
+    if (ac.state === 'suspended') ac.resume().catch(() => {});
     const o = ac.createOscillator();
     const g = ac.createGain();
     o.frequency.value = 880;
@@ -1596,11 +1760,16 @@ function ensureRecognizer() {
       return;
     }
 
-    // anti-eco: ignora a própria voz do JARVIS captada pelo microfone
-    if (isOwnVoice(clean)) {
-      lastSpokenText = '';                 // libera a próxima frase legítima
-      return;
-    }
+    // anti-eco: o microfone fica aberto enquanto o JARVIS fala e capta a própria voz.
+    // Enquanto ele fala — e por um instante depois — nada do que o mic ouve vira
+    // comando; antes o eco passava e o JARVIS respondia à própria voz (voz duplicada).
+    if (window.isSpeaking || Date.now() - speechEndedAt < 900) return;
+    if (isOwnVoice(clean)) return;
+
+    // dedupe: o reconhecimento contínuo às vezes entrega o mesmo trecho duas vezes
+    if (clean === lastDispatchText && performance.now() - lastDispatchAt < 1500) return;
+    lastDispatchText = clean;
+    lastDispatchAt = performance.now();
 
     const hit = findWakeWord(clean);
     if (hit) {
@@ -2300,8 +2469,8 @@ $('#saveSettings').addEventListener('click', async () => {
   if (saved.ollamaModel !== undefined) $('#setOllamaModel').value = saved.ollamaModel;
   setProviderUI(saved.provider || $('#setProvider').value);
   saveLocal();
-  // cidade do clima: o backend resolve cidade→lat/lon UMA vez (Nominatim) e grava no
-  // config.json com permissão 0600 — o /weather nunca consulta o Nominatim.
+  // cidade do clima: o backend resolve cidade→lat/lon UMA vez (geocoding do open-meteo) e
+  // grava no config.json com permissão 0600 — o /weather nunca geocodifica de novo.
   let weatherMsg = '';
   const cityEl = $('#setWeatherCity');
   const city = (cityEl ? cityEl.value : '').trim();
