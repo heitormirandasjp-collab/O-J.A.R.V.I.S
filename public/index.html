@@ -3,11 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#060a12" />
+  <meta name="theme-color" content="#08090b" />
   <title>JARVIS — Command Center</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -21,11 +18,11 @@
 
   <!-- barra de título própria (usada quando roda como app desktop/Electron) -->
   <div class="titlebar" id="titlebar" hidden>
-    <div class="tb-brand"><span class="tb-dot"></span> JARVIS <small>COMMAND CENTER</small></div>
+    <div class="tb-brand"><span class="tb-dot"></span> JARVIS <small>Command Center</small></div>
     <div class="tb-actions">
-      <button class="tb-btn" id="winMin" title="Minimizar">—</button>
-      <button class="tb-btn" id="winMax" title="Maximizar">▢</button>
-      <button class="tb-btn close" id="winClose" title="Fechar">✕</button>
+      <button class="tb-btn" id="winMin" title="Minimizar" aria-label="Minimizar"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+      <button class="tb-btn" id="winMax" title="Maximizar" aria-label="Maximizar"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg></button>
+      <button class="tb-btn close" id="winClose" title="Fechar" aria-label="Fechar"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
   </div>
 
@@ -33,28 +30,33 @@
     <!-- ══════════ SIDEBAR ══════════ -->
     <aside class="sidebar panel-line">
       <div class="brand">
-        <div class="brand-mark"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span></div>
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 26 26" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+            <path d="M21.4 17.1A9.5 9.5 0 1 1 18.6 6.1" opacity="0.55" />
+            <circle cx="20.6" cy="6.7" r="2.1" fill="currentColor" stroke="none" />
+          </svg>
+        </div>
         <div class="brand-text">
           <h1>JARVIS</h1>
-          <small>COMMAND CENTER</small>
+          <small>Centro de comando</small>
         </div>
       </div>
 
       <nav class="nav" id="nav">
-        <button class="nav-item active" data-view="command"><span class="ni-ico">▣</span> Painel</button>
-        <button class="nav-item disabled" data-view="system" aria-disabled="true" title="Painel removido — o globo é o painel"><span class="ni-ico">◎</span> Sistema</button>
-        <button class="nav-item disabled" data-view="modules" aria-disabled="true" title="Painel removido"><span class="ni-ico">◉</span> Módulos</button>
-        <button class="nav-item disabled" data-view="market" aria-disabled="true" title="Painel removido"><span class="ni-ico">▤</span> Mercado</button>
-        <button class="nav-item disabled" data-view="activity" aria-disabled="true" title="Painel removido"><span class="ni-ico">☑</span> Atividade</button>
-        <button class="nav-item" data-view="conversations" id="navChat"><span class="ni-ico">▢</span> Conversas</button>
-        <button class="nav-item" data-view="settings" id="navSettings"><span class="ni-ico">⚙</span> Configurações</button>
+        <button class="nav-item active" data-view="command"><span class="ni-ico"><svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></span> Painel</button>
+        <button class="nav-item disabled" data-view="system" aria-disabled="true" title="Painel removido — o globo é o painel"><span class="ni-ico"><svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg></span> Sistema</button>
+        <button class="nav-item disabled" data-view="modules" aria-disabled="true" title="Painel removido"><span class="ni-ico"><svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg></span> Módulos</button>
+        <button class="nav-item disabled" data-view="market" aria-disabled="true" title="Painel removido"><span class="ni-ico"><svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 19V11M12 19V5M19 19v-6"/></svg></span> Mercado</button>
+        <button class="nav-item disabled" data-view="activity" aria-disabled="true" title="Painel removido"><span class="ni-ico"><svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12l3 3 5-6"/></svg></span> Atividade</button>
+        <button class="nav-item" data-view="conversations" id="navChat"><span class="ni-ico"><svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg></span> Conversas</button>
+        <button class="nav-item" data-view="settings" id="navSettings"><span class="ni-ico"><svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></span> Configurações</button>
       </nav>
 
       <div class="voice-block">
-        <div class="voice-head"><span>STATUS DE VOZ</span><span class="chev" id="voiceChev">›</span></div>
+        <div class="voice-head">Voz</div>
         <div class="wave" id="sideWave" aria-hidden="true"></div>
         <div class="voice-label" id="voiceLabel">Toque para falar</div>
-        <button class="mic-btn" id="micBtn" title="Falar com o JARVIS">
+        <button class="mic-btn" id="micBtn" title="Falar com o JARVIS" aria-label="Falar com o JARVIS">
           <span class="mic-pulse"></span>
           <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
             <rect x="9" y="2.5" width="6" height="11" rx="3"></rect>
@@ -70,14 +72,15 @@
             <div class="mic-test-help">Fale ou bata na mesa para ver o nível.</div>
           </div>
         </div>
-        <button class="focus-btn" id="wakeBtn"><span>◈</span> <span id="wakeLabel">Escuta contínua: OFF</span></button>
-        <button class="focus-btn" id="viz3dBtn"><span>▣</span> Visualizar em 3D</button>
+        <button class="focus-btn" id="wakeBtn"><span><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 9-9 9-9-9z"/></svg></span> <span id="wakeLabel">Escuta contínua: OFF</span></button>
+        <div class="voice-head">Ferramentas</div>
+        <button class="focus-btn" id="arBtn" title="Abre a câmera com um modelo 3D na sua mão"><span><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 3v18M4 7.5l8 4.5 8-4.5"/></svg></span> Ativar AR</button>
+        <button class="focus-btn" id="viz3dBtn"><span><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></span> Visualizar em 3D</button>
         <div class="viz3d-row" id="viz3dRow" hidden>
           <input id="viz3dInput" type="text" maxlength="200" placeholder="ex.: um carro vermelho" />
           <button id="viz3dGo">Ver</button>
         </div>
-        <button class="focus-btn" id="arBtn" title="Abre a câmera com um modelo 3D na sua mão">Ativar AR</button>
-        <button class="focus-btn" id="weatherBtn">Clima</button>
+        <button class="focus-btn" id="weatherBtn"><span><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="7.6" cy="8.4" r="2.5"/><path d="M7.6 3.4v1.6M3.4 4.6l1.2 1.2M11.8 4.6l1.2-1.2"/><path d="M7.5 19.2h8.6a3.2 3.2 0 0 0 .3-6.4A4.7 4.7 0 0 0 7.8 11"/><path d="M3.9 15.2a2.6 2.6 0 0 0 1.9 4"/></svg></span> Clima</button>
         <div class="weather-box" id="weatherBox" hidden>
           <div class="wx-head"><b id="wxCity">—</b><small id="wxSrc">—</small></div>
           <div class="wx-temp"><b id="wxTemp">—</b><small id="wxDesc">—</small></div>
@@ -89,7 +92,7 @@
           </div>
           <div class="wx-foot"><small>Medição</small><b id="wxMeasured">—</b></div>
         </div>
-        <button class="focus-btn" id="memoryBtn">Memórias</button>
+        <button class="focus-btn" id="memoryBtn"><span><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 3 7.4l9 4.4 9-4.4z"/><path d="M3 12.3 12 16.7l9-4.4"/><path d="M3 17.1 12 21.5l9-4.4"/></svg></span> Memórias</button>
         <div class="memory-box" id="memoryBox" hidden>
           <div class="mem-head"><b>MEMÓRIAS</b><small id="memTotal">—</small></div>
           <ul class="mem-list" id="memList"></ul>
@@ -98,12 +101,12 @@
             <button id="memReset" class="danger">Resetar tudo</button>
           </div>
         </div>
-        <button class="focus-btn" id="codeBtn">Programar</button>
+        <button class="focus-btn" id="codeBtn"><span><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.4 8.2 4.4 12l4 3.8M15.6 8.2 19.6 12l-4 3.8"/><path d="M13.3 5.6 10.7 18.4"/></svg></span> Programar</button>
         <div class="viz3d-row" id="codeRow" hidden>
           <input id="codeInput" type="text" maxlength="500" placeholder="ex.: um site de portfólio" />
           <button id="codeGo">Gerar</button>
         </div>
-        <button class="focus-btn" id="newsBtn">Notícias</button>
+        <button class="focus-btn" id="newsBtn"><span><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5h12.5V19H6.2A2.2 2.2 0 0 1 4 16.8z"/><path d="M16.5 9.5h3.5v7.3a2.2 2.2 0 0 1-2.2 2.2"/><path d="M7.2 9.2h6.1M7.2 12.6h6.1M7.2 16h4.1"/></svg></span> Notícias</button>
         <div class="viz3d-row news-row" id="newsRow" hidden>
           <select id="newsSource">
             <option value="g1">G1</option>
@@ -123,9 +126,9 @@
       </div>
 
       <div class="side-foot">
-        <div class="sf-item"><span class="sf-ico">▣</span><div><small>Host</small><b id="sfHost">—</b></div></div>
-        <div class="sf-item"><span class="sf-ico">◷</span><div><small>Ligado há</small><b id="sfUptime">—</b></div></div>
-        <div class="sf-item"><span class="sf-ico net">▂</span><div><small>Rede</small><b class="ok" id="sfNet">—</b></div></div>
+        <div class="sf-item"><span class="sf-ico"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></span><div><small>Host</small><b id="sfHost">—</b></div></div>
+        <div class="sf-item"><span class="sf-ico"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span><div><small>Ligado há</small><b id="sfUptime">—</b></div></div>
+        <div class="sf-item"><span class="sf-ico net"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 19v-3M10 19v-7M15 19v-10M20 19V6"/></svg></span><div><small>Rede</small><b class="ok" id="sfNet">—</b></div></div>
       </div>
     </aside>
 
@@ -133,19 +136,19 @@
     <main class="main">
       <!-- TOPBAR -->
       <header class="topbar">
-        <div class="chip status-chip" id="sysChip"><span class="dot green blink"></span> SISTEMA <b id="sysState">—</b></div>
+        <div class="chip status-chip" id="sysChip"><span class="dot green blink"></span> Sistema <b id="sysState">—</b></div>
         <div class="clockbox">
-          <div class="date" id="today">—</div>
           <div class="clock" id="clock">--:--:--</div>
+          <div class="date" id="today">—</div>
         </div>
         <div class="top-right">
           <label class="search">
-            <span>⌕</span>
+            <span><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></span>
             <input id="search" type="text" placeholder="Perguntar ao JARVIS..." />
-            <kbd>⌘K</kbd>
+            <kbd>Ctrl K</kbd>
           </label>
-          <button class="ico-btn" id="ttsQuickBtn" title="Voz do JARVIS (TTS)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/></svg></button>
-          <button class="ico-btn" id="gearBtn" title="Configurações">⚙</button>
+          <button class="ico-btn" id="ttsQuickBtn" title="Voz do JARVIS (TTS)" aria-label="Voz do JARVIS (TTS)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/></svg></button>
+          <button class="ico-btn" id="gearBtn" title="Configurações" aria-label="Configurações"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></button>
           <div class="operator">
             <div class="op-text"><b id="opModel">—</b><small id="opProvider">provedor</small></div>
             <div class="avatar"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg></div>
@@ -160,13 +163,14 @@
         <section class="cell cell-globe rise" style="--d:.12s">
           <div class="globe-wrap">
             <canvas id="globe"></canvas>
-            <div class="globe-overlay">
-              <div class="g-title">J.A.R.V.I.S.</div>
-              <div class="g-sub">AI CORE</div>
-              <div class="g-ver" id="engineLabel">aguardando...</div>
+            <div class="stage-meta">
+              <div class="sm-state">
+                <span class="sm-dot"></span>
+                <span class="sm-idle">em espera</span>
+                <span class="sm-live">falando</span>
+              </div>
+              <div class="sm-engine" id="engineLabel">aguardando provedor</div>
             </div>
-            <div class="corner tl"></div><div class="corner tr"></div>
-            <div class="corner bl"></div><div class="corner br"></div>
           </div>
         </section>
 
@@ -175,16 +179,15 @@
       <!-- BOTTOM BAR (dados reais) -->
       <footer class="talkbar">
         <div class="tb-side">
-          <div class="sf-item"><span class="sf-ico">▣</span><div><small>Host</small><b id="tbHost">—</b></div></div>
-          <div class="sf-item"><span class="sf-ico">◷</span><div><small>Ligado há</small><b id="tbUptime">—</b></div></div>
-          <div class="sf-item"><span class="sf-ico net">▂</span><div><small>Rede</small><b class="ok" id="tbNet">—</b></div></div>
+          <div class="sf-item"><span class="sf-ico"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></span><div><small>Host</small><b id="tbHost">—</b></div></div>
+          <div class="sf-item"><span class="sf-ico"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span><div><small>Ligado há</small><b id="tbUptime">—</b></div></div>
+          <div class="sf-item"><span class="sf-ico net"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 19v-3M10 19v-7M15 19v-10M20 19V6"/></svg></span><div><small>Rede</small><b class="ok" id="tbNet">—</b></div></div>
         </div>
         <button class="talk-pill" id="talkPill">
-          <span class="tp-wave" id="pillWave"></span>
-          <span class="tp-text"><b>FALE COM O JARVIS</b><small id="pillStatus">clique ou diga "Jarvis"</small></span>
-          <span class="tp-wave right" id="pillWave2"></span>
+          <span class="tp-wave" id="pillWave" aria-hidden="true"></span>
+          <span class="tp-text"><b>Falar com o JARVIS</b><small id="pillStatus">clique ou diga "Jarvis"</small></span>
         </button>
-        <button class="exec-btn" id="execBtn">▷ Resumo do Sistema</button>
+        <button class="exec-btn" id="execBtn"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M8 5l11 7-11 7z"/></svg> Resumo do sistema</button>
       </footer>
     </main>
   </div>
@@ -201,14 +204,14 @@
           <span class="chip mini" id="chatState"><span class="dot green blink"></span>PRONTO</span>
           <button class="ico-btn" id="ttsBtn" title="Voz do JARVIS (TTS)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/></svg></button>
           <button class="ico-btn" id="clearChat" title="Limpar"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
-          <button class="ico-btn" id="closeChat" title="Fechar">✕</button>
+          <button class="ico-btn" id="closeChat" title="Fechar"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
         </div>
       </header>
-      <div class="chat-log" id="chatLog"></div>
+      <div class="chat-log" id="chatLog" role="log" aria-live="polite" aria-relevant="additions text"></div>
       <form class="chat-input" id="chatForm">
-        <button type="button" class="ico-btn mic" id="chatMic" title="Falar agora">◉</button>
-        <input id="chatText" type="text" autocomplete="off" placeholder="Pergunte algo ao JARVIS..." />
-        <button type="submit" class="send-btn" id="sendBtn">ENVIAR ▸</button>
+        <button type="button" class="ico-btn mic" id="chatMic" title="Falar agora" aria-label="Falar agora"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18.5V22"/></svg></button>
+        <input id="chatText" type="text" autocomplete="off" placeholder="Pergunte algo ao JARVIS..." aria-label="Mensagem para o JARVIS" />
+        <button type="submit" class="send-btn" id="sendBtn">Enviar <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg></button>
       </form>
     </div>
   </div>
@@ -216,7 +219,7 @@
   <!-- ══════════ CONFIGURAÇÕES ══════════ -->
   <div class="modal-overlay" id="settingsModal" hidden>
     <div class="modal">
-      <header><b>PROVEDOR &amp; VOZ</b><button class="ico-btn" id="closeSettings">✕</button></header>
+      <header><b>Provedor e voz</b><button class="ico-btn" id="closeSettings"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
       <div class="modal-body">
         <label>Provedor de IA
           <select id="setProvider">
@@ -272,10 +275,10 @@
     </div>
   </div>
 
-  <div class="toast" id="toast" hidden></div>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
   <!-- modo foco: sai dos painéis (ESC também funciona) -->
-  <button class="focus-exit" id="focusExit" hidden>▢ Mostrar painéis</button>
+  <button class="focus-exit" id="focusExit" hidden><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> Mostrar painéis</button>
 
   <!-- Three.js (globo 3D). Se não carregar, o app cai para o globo 2D. -->
   <script src="/vendor/three.min.js"></script><!-- Three.js r128 servido localmente: sem internet o globo 3D não cai mais no fallback 2D -->

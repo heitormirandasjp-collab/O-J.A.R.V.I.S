@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * JARVIS Command Center — servidor zero-dependências.
- * Serve a UI estática e expõe /api/chat com streaming SSE,
- * falando apenas com a Groq (sem fallback).
+ * Serve a UI estática e expõe /api/chat com streaming SSE, falando com
+ * o provedor escolhido no config.json: Groq (nuvem) ou Ollama (local).
  *
  * Uso:  node server.js          (porta 8755)
  *       PORT=9000 node server.js
@@ -37,9 +37,37 @@ function corsHeaders(req) {
   };
 }
 
+/* Anti DNS rebinding: a API local só responde a Host loopback (127.0.0.1/localhost/::1). */
+const LOOPBACK_NAMES = new Set(['127.0.0.1', 'localhost', '::1']);
+
+function hostName(value) {
+  const host = String(value || '').trim().toLowerCase();
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']');
+    return end > 0 ? host.slice(1, end) : host;
+  }
+  return host.split(':')[0];
+}
+
+function hostAllowed(req) {
+  const host = req.headers.host;
+  return !host || LOOPBACK_NAMES.has(hostName(host));
+}
+
+/* CSP da UI principal (ar.html usa CDN e fica sem CSP restritiva). */
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; " +
+  "connect-src 'self' http://127.0.0.1:8000 http://localhost:8000; " +
+  "worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
 const BACKEND_URL = process.env.BACKEND_URL || 'http://127.0.0.1:8000';
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODELS = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
+
+/* provedores de IA do chat: "groq" (nuvem) ou "ollama" (modelos locais, endpoint OpenAI) */
+const AI_PROVIDERS = ['groq', 'ollama'];
+const OLLAMA_URL = 'http://127.0.0.1:11434/v1';
+const OLLAMA_MODEL = 'llama3';
 
 /* System prompt (personalidade): fonte única em system_prompt.txt — o MESMO arquivo
    é lido pelo app.py. As regras operacionais abaixo continuam valendo. */
@@ -189,14 +217,101 @@ function clampMinutes(v, def = 5) {
   return Math.max(0, Math.min(1440, m));
 }
 
+function clampProvider(v) {
+  const p = String(v || '').trim().toLowerCase();
+  return AI_PROVIDERS.includes(p) ? p : 'groq';
+}
+
+function clampOllamaUrl(v) {
+  const url = String(v || '').trim().slice(0, 300).replace(/\/+$/, '');
+  return /^https?:\/\/\S+$/.test(url) ? url : OLLAMA_URL;
+}
+
+function clampModelName(v) {
+  return String(v || '').replace(/[^A-Za-z0-9._:/\-]/g, '').slice(0, 120);
+}
+
 function loadConfig() {
+  let raw = {};
   try {
-    const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    return Object.assign({ groqKey: '', groqModel: '', continuous_listen_minutes: 5 }, raw, {
-      continuous_listen_minutes: clampMinutes((raw || {}).continuous_listen_minutes),
-    });
+    raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) || {};
   } catch {
-    return { groqKey: '', groqModel: '', continuous_listen_minutes: 5 };
+    raw = {};
+  }
+  return Object.assign(
+    {
+      provider: 'groq',
+      groqKey: '',
+      groqModel: '',
+      ollamaUrl: OLLAMA_URL,
+      ollamaModel: '',
+      continuous_listen_minutes: 5,
+    },
+    raw,
+    {
+      provider: clampProvider(raw.provider),
+      ollamaUrl: clampOllamaUrl(raw.ollamaUrl),
+      ollamaModel: clampModelName(raw.ollamaModel),
+      continuous_listen_minutes: clampMinutes(raw.continuous_listen_minutes),
+    },
+  );
+}
+
+/** Provedor escolhido: mesma interface para Groq (nuvem) e Ollama (local). */
+function resolveProvider(cfg) {
+  if (clampProvider(cfg.provider) === 'ollama') {
+    const base = clampOllamaUrl(cfg.ollamaUrl);
+    return {
+      name: 'ollama',
+      label: 'Ollama',
+      configured: true, // local não exige chave
+      baseUrl: base,
+      models: [clampModelName(cfg.ollamaModel) || OLLAMA_MODEL],
+      url: `${base.endsWith('/v1') ? base : `${base}/v1`}/chat/completions`,
+      headers: {},
+    };
+  }
+  return {
+    name: 'groq',
+    label: 'Groq',
+    configured: !!cfg.groqKey,
+    baseUrl: GROQ_URL.replace(/\/chat\/completions$/, ''),
+    models: cfg.groqModel ? [cfg.groqModel] : GROQ_MODELS.slice(),
+    url: GROQ_URL,
+    headers: { Authorization: `Bearer ${cfg.groqKey}` },
+  };
+}
+
+/** Testa o Ollama local sem derrubar o servidor (erro vira JSON). */
+async function testOllama(url) {
+  const base = clampOllamaUrl(url || OLLAMA_URL);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const r = await fetch(`${base}/models`, { signal: ctrl.signal, headers: { Accept: 'application/json' } });
+    const text = await r.text();
+    if (!r.ok) {
+      return { ok: false, url: base, models: [], error: `Ollama respondeu HTTP ${r.status} em ${base}/models.` };
+    }
+    let data = {};
+    try {
+      data = JSON.parse(text) || {};
+    } catch {
+      data = {};
+    }
+    const list = Array.isArray(data.data) ? data.data : Array.isArray(data.models) ? data.models : [];
+    const models = list.map((m) => m && (m.id || m.name)).filter(Boolean);
+    return { ok: true, url: base, models, error: null };
+  } catch (e) {
+    const motivo = e.name === 'AbortError' ? 'tempo esgotado' : e.message;
+    return {
+      ok: false,
+      url: base,
+      models: [],
+      error: `Não consegui falar com o Ollama em ${base} (${motivo}). Verifique se ele está rodando: ollama serve`,
+    };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -405,15 +520,17 @@ function extractErrorMessage(raw, contentType) {
   return raw.replace(/\s+/g, ' ').slice(0, 200);
 }
 
-/** Faz POST streaming para um provedor OpenAI-compatible. */
+/** Faz POST streaming para um provedor OpenAI-compatible (Groq em https, Ollama em http). */
 function callUpstream({ url, headers, body, timeout }) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const payload = JSON.stringify(body);
-    const req = https.request(
+    const isHttps = u.protocol === 'https:';
+    const transport = isHttps ? https : http;
+    const req = transport.request(
       {
         hostname: u.hostname,
-        port: u.port || 443,
+        port: u.port || (isHttps ? 443 : 80),
         path: u.pathname + u.search,
         method: 'POST',
         headers: Object.assign(
@@ -1130,21 +1247,16 @@ function toolFallbackText(tool, result) {
 }
 
 function buildAttempts(cfg) {
-  const attempts = [];
-  if (cfg.groqKey) {
-    const models = cfg.groqModel ? [cfg.groqModel] : GROQ_MODELS;
-    for (const model of models) {
-      attempts.push({
-        provider: 'groq',
-        model,
-        url: GROQ_URL,
-        headers: { Authorization: `Bearer ${cfg.groqKey}` },
-        timeout: 30000,
-        fatalStatuses: [401, 403],
-      });
-    }
-  }
-  return attempts;
+  const provider = resolveProvider(cfg);
+  if (!provider.configured) return [];
+  return provider.models.map((model) => ({
+    provider: provider.name,
+    model,
+    url: provider.url,
+    headers: provider.headers,
+    timeout: 30000,
+    fatalStatuses: provider.name === 'groq' ? [401, 403] : [],
+  }));
 }
 
 async function handleChat(req, res) {
@@ -1241,6 +1353,7 @@ async function handleChat(req, res) {
   });
 
   const cfg = loadConfig();
+  const provider = resolveProvider(cfg);
   const attempts = buildAttempts(cfg);
 
   // confirmação pendente de desligamento: um "sim" do Comandante executa de verdade
@@ -1301,7 +1414,7 @@ async function handleChat(req, res) {
     }
     sse(res, 'error', {
       message:
-        'Nenhuma chave da Groq configurada. Abra as Configurações (engrenagem) e cole sua chave (console.groq.com/keys).',
+        'Nenhum provedor de IA configurado. Abra as Configurações (engrenagem) e cole a chave da Groq ou selecione o Ollama local.',
       tried: [],
     });
     res.write('event: done\ndata: {}\n\n');
@@ -1452,7 +1565,9 @@ async function handleChat(req, res) {
 
   if (!closed) {
     sse(res, 'error', {
-      message: `Todos os provedores falharam. Últimos erros: ${tried.slice(-3).join(' | ')}`,
+      message:
+        `${provider.label} falhou. Últimos erros: ${tried.slice(-3).join(' | ')}` +
+        (provider.name === 'ollama' ? ` Verifique se o Ollama está rodando (ollama serve) em ${provider.baseUrl}.` : ''),
       tried,
     });
     res.write('event: done\ndata: {}\n\n');
@@ -1462,8 +1577,18 @@ async function handleChat(req, res) {
 
 async function handleStatus(req, res) {
   const cfg = loadConfig();
+  const provider = resolveProvider(cfg);
   const body = JSON.stringify({
+    provider: {
+      name: provider.name,
+      label: provider.label,
+      configured: provider.configured,
+      url: provider.baseUrl,
+      model: provider.models[0] || '',
+    },
+    // mantido para compatibilidade com HUDs/clientes antigos
     groq: { configured: !!cfg.groqKey, key: mask(cfg.groqKey), model: cfg.groqModel || 'auto' },
+    ollama: { url: cfg.ollamaUrl, model: cfg.ollamaModel || OLLAMA_MODEL },
     continuous_listen_minutes: cfg.continuous_listen_minutes,
   });
   res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...securityHeaders() });
@@ -1476,10 +1601,13 @@ async function handleConfigMasked(req, res) {
   res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...securityHeaders() });
   res.end(
     JSON.stringify({
+      provider: resolveProvider(cfg).name,
       groqKey: mask(cfg.groqKey),
       groqModel: cfg.groqModel,
+      ollamaUrl: cfg.ollamaUrl,
+      ollamaModel: cfg.ollamaModel,
       continuous_listen_minutes: cfg.continuous_listen_minutes,
-      configured: !!cfg.groqKey,
+      configured: resolveProvider(cfg).configured,
     }),
   );
 }
@@ -1488,7 +1616,16 @@ async function handleConfig(req, res) {
   const cfg = loadConfig();
   if (req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...securityHeaders() });
-    res.end(JSON.stringify({ groqKey: cfg.groqKey, groqModel: cfg.groqModel, continuous_listen_minutes: cfg.continuous_listen_minutes }));
+    res.end(
+      JSON.stringify({
+        provider: cfg.provider,
+        groqKey: cfg.groqKey,
+        groqModel: cfg.groqModel,
+        ollamaUrl: cfg.ollamaUrl,
+        ollamaModel: cfg.ollamaModel,
+        continuous_listen_minutes: cfg.continuous_listen_minutes,
+      }),
+    );
     return;
   }
   if (req.method === 'POST') {
@@ -1501,6 +1638,9 @@ async function handleConfig(req, res) {
       return;
     }
     const next = Object.assign({}, cfg);
+    if (body.provider !== undefined) next.provider = clampProvider(body.provider);
+    if (typeof body.ollamaUrl === 'string') next.ollamaUrl = clampOllamaUrl(body.ollamaUrl);
+    if (typeof body.ollamaModel === 'string') next.ollamaModel = clampModelName(body.ollamaModel);
     if (typeof body.groqKey === 'string') {
       const key = body.groqKey.trim();
       // nunca grava um placeholder mascarado por cima da chave real
@@ -1512,10 +1652,30 @@ async function handleConfig(req, res) {
     }
     saveConfig(next);
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...securityHeaders() });
-    res.end(JSON.stringify({ ok: true, continuous_listen_minutes: next.continuous_listen_minutes }));
+    res.end(
+      JSON.stringify({
+        ok: true,
+        provider: next.provider,
+        ollamaUrl: next.ollamaUrl,
+        ollamaModel: next.ollamaModel,
+        continuous_listen_minutes: next.continuous_listen_minutes,
+      }),
+    );
     return;
   }
   res.writeHead(405).end();
+}
+
+async function handleOllamaTest(req, res) {
+  let body = {};
+  try {
+    body = JSON.parse((await readBody(req)) || '{}') || {};
+  } catch {
+    body = {};
+  }
+  const result = await testOllama(body.url);
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...securityHeaders() });
+  res.end(JSON.stringify(result));
 }
 
 function serveStatic(req, res) {
@@ -1527,7 +1687,9 @@ function serveStatic(req, res) {
   }
   if (pathname === '/') pathname = '/index.html';
   const filePath = path.normalize(path.join(PUBLIC_DIR, pathname));
-  if (!filePath.startsWith(PUBLIC_DIR)) {
+  // path.relative em vez de startsWith: uma pasta irmã "publicX" também começava com "public".
+  const rel = path.relative(PUBLIC_DIR, filePath);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
     res.writeHead(403).end('Forbidden');
     return;
   }
@@ -1549,7 +1711,14 @@ function serveStatic(req, res) {
 const server = http.createServer(async (req, res) => {
   try {
     // headers de segurança + CORS restrito em todas as respostas
-    for (const [k, v] of Object.entries({ ...securityHeaders(), ...corsHeaders(req) })) res.setHeader(k, v);
+    if (!hostAllowed(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'host não permitido' }));
+      return;
+    }
+    const sec = securityHeaders();
+    if (!req.url.startsWith('/ar.html')) sec['Content-Security-Policy'] = CSP;
+    for (const [k, v] of Object.entries({ ...sec, ...corsHeaders(req) })) res.setHeader(k, v);
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
@@ -1557,6 +1726,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.url.startsWith('/api/chat') && req.method === 'POST') return await handleChat(req, res);
     if (req.url.startsWith('/api/status') && req.method === 'GET') return await handleStatus(req, res);
+    if (req.url.startsWith('/api/ollama/test') && req.method === 'POST') return await handleOllamaTest(req, res);
     if (req.url.startsWith('/api/config/masked')) return await handleConfigMasked(req, res);
     if (req.url.startsWith('/api/config')) return await handleConfig(req, res);
     if (req.url.startsWith('/api/')) {
@@ -1581,7 +1751,10 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   const cfg = loadConfig();
   console.log(`JARVIS online em http://${HOST}:${PORT}`);
-  console.log(`  Groq:    ${cfg.groqKey ? 'configurada' : 'não configurada'}`);
+  const provider = resolveProvider(cfg);
+  console.log(
+    `  IA:      ${provider.name}${provider.configured ? '' : ' (não configurado)'} · ${provider.baseUrl} · ${provider.models[0]}`,
+  );
 
   healthProbe();
 });

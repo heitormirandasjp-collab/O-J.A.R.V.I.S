@@ -194,6 +194,32 @@ app.add_middleware(
 )
 
 
+_LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
+
+
+def _host_name(value: str) -> str:
+    """Extrai o nome do Host ignorando a porta (aceita IPv6 entre colchetes)."""
+    host = (value or "").strip().lower()
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end] if end > 0 else host
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
+
+@app.middleware("http")
+async def _host_guard(request, call_next):
+    """Bloqueia DNS rebinding: o backend de ferramentas só responde a Host loopback.
+
+    Sem isso, um site malicioso podia reescrever o DNS para 127.0.0.1 e chamar
+    /read-file, /memory ou /news com o navegador do usuário (SSRF/localhost).
+    """
+    host = request.headers.get("host")
+    if host and _host_name(host) not in _LOOPBACK_NAMES:
+        _security_log("host", f"Host recusado: {host}", blocked=True)
+        return JSONResponse({"error": "host não permitido"}, status_code=403)
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def _security_headers(request, call_next):
     response = await call_next(request)
@@ -415,7 +441,10 @@ _READ_DENY_NAMES = {
     ".env", ".netrc", "_netrc", ".git-credentials", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
     "shadow", "passwd", "gshadow", "sam", "security", "unattend.xml", "config.json",
 }
-_READ_DENY_SUFFIXES = {".key", ".pem", ".pfx", ".p12", ".kdbx", ".jks", ".keystore", ".ppk", ".asc", ".ovpn"}
+_READ_DENY_SUFFIXES = {
+    ".key", ".pem", ".pfx", ".p12", ".kdbx", ".jks", ".keystore", ".ppk", ".asc", ".ovpn",
+    ".env",  # cobre também nomes como "api groq jarvis.env"
+}
 _READ_DENY_PARTS = (
     '/windows/system32/config', '/windows/system32/sam', '/windows/system32/security',
     '/windows/system32/drivers/etc', '/appdata/roaming/microsoft/credentials',
@@ -470,7 +499,8 @@ def read_file(body: ReadFileIn):
 
         # 2) só dentro das pastas permitidas
         roots = _allowed_read_roots()
-        if not any(str(p).startswith(str(r)) for r in roots):
+        # is_relative_to em vez de startswith: "...\Documents2" não é "...\Documents".
+        if not any(p.is_relative_to(r) for r in roots):
             _security_log("read-file", f"fora das pastas permitidas: {p}", blocked=True)
             return JSONResponse(
                 {"error": "🔒 leitura restrita a Documents, Downloads, Desktop e à pasta do JARVIS"},

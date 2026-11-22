@@ -1,7 +1,7 @@
 # JARVIS — Command Center
 
 Assistente pessoal com HUD animado, voz pt-BR (Piper), ferramentas locais reais e chat
-com streaming via **Groq**. Sem fallback: só Groq.
+com streaming via **Groq** (nuvem) ou **Ollama** (modelos locais).
 
 > Nada aqui usa o backend do OpenJarvis. Só o modelo de voz vem de lá
 > (`pt-BR-razo-medium.onnx`, na raiz do projeto).
@@ -9,10 +9,11 @@ com streaming via **Groq**. Sem fallback: só Groq.
 ## O que é o JARVIS
 
 Assistente pessoal **local** para Windows, com HUD animado, globo 3D, voz pt-BR (Piper/Edge
-TTS), chat com streaming via **Groq** e ferramentas de verdade na máquina (comandos, leitura
-de arquivos, clima, notícias, agenda, memória persistente). Roda 100% no seu computador: os
-únicos serviços externos são a API da **Groq** (texto) e, se você escolher o Edge TTS, a da
-Microsoft (vozes neurais). Não é o OpenJarvis — projeto próprio, sem backend remoto.
+TTS), chat com streaming via **Groq** (nuvem) ou **Ollama** (modelos locais) e ferramentas
+de verdade na máquina (comandos, leitura de arquivos, clima, notícias, agenda, memória
+persistente). Com o Ollama, o texto não sai da máquina; com a Groq, o único serviço externo
+de texto é a API dela — e, se você escolher o Edge TTS, a voz usa a API da Microsoft. Não é
+o OpenJarvis — projeto próprio, sem backend remoto.
 
 ## Arquitetura
 
@@ -75,7 +76,8 @@ Opcional: a **memória com embeddings** (busca semântica em `/memory/*`) exige 
 fora do `requirements.txt` — `sentence-transformers` (usa PyTorch) ou `chromadb` (reserva
 ONNX MiniLM, leve). Sem nenhum dos dois, o backend sobe, mas a memória responde erro.
 
-Depois, configure a chave da Groq (seção **Configuração**) e abra `http://127.0.0.1:8755`.
+Depois, configure o provedor de IA (chave da Groq ou Ollama local — seção **Configuração**)
+e abra `http://127.0.0.1:8755`.
 
 ## Configuração
 
@@ -84,8 +86,11 @@ Tudo fica em **`config.json`**, na raiz do projeto (no `.exe`, em
 
 | Chave | O que é | Padrão |
 |---|---|---|
-| `groqKey` | chave da API da Groq — obrigatória para o chat | — |
-| `groqModel` | modelo do chat (a lista tem fallback interno) | vazio = modelos testados |
+| `provider` | provedor do chat: `groq` (nuvem) ou `ollama` (local) | `groq` |
+| `groqKey` | chave da API da Groq — obrigatória quando o provedor é `groq` | — |
+| `groqModel` | modelo da Groq (a lista tem fallback interno) | vazio = modelos testados |
+| `ollamaUrl` | URL base do Ollama (compatível com OpenAI) | `http://127.0.0.1:11434/v1` |
+| `ollamaModel` | modelo local (nome exato do `ollama list`) | `llama3` |
 | `tts_engine` | motor de voz: `piper` ou `edge` | `piper` |
 | `tts_voice` | voz: arquivo `.onnx` (Piper) ou ShortName (Edge) | `pt_BR-cadu-medium.onnx` |
 | `continuous_listen_minutes` | minutos de escuta contínua após o wake word (`0` = infinito) | `5` |
@@ -113,7 +118,7 @@ direto no `config.json`). Detalhes dos modelos e da voz em **"Chave da Groq"** e
 Com o backend (8000) e a UI (8755) no ar, abra `http://127.0.0.1:8755` — ou use o `.exe` /
 app Electron, que sobem tudo sozinhos. O que dá pra fazer:
 
-- **Chat** com streaming via Groq e agente com tool calling (engrenagem ⚙ para chave/modelo);
+- **Chat** com streaming via Groq ou Ollama e agente com tool calling (engrenagem ⚙ para provedor/chave/modelo);
 - **Voz pt-BR**: dizer "Jarvis" acorda o assistente (escuta contínua configurável), com Piper
   (voz local) ou Edge TTS (neural, precisa internet);
 - **3D**: globo do núcleo (5.000 partículas; arrasto gira, com inércia e zoom), visualizador
@@ -261,6 +266,68 @@ Modelos testados com a chave atual (a lista tem fallback interno entre eles):
 `openai/gpt-oss-120b` → `openai/gpt-oss-20b` → `qwen/qwen3.8-27b`.
 Se `llama-3.3-70b-versatile` ainda existir na sua conta, escreva o nome dele no campo
 "Modelo" nas configurações.
+
+## Rodando com Ollama (modelos locais)
+
+O chat aceita dois provedores, escolhidos na **engrenagem ⚙ → Provedor de IA**:
+
+| Opção | Onde roda | Chave |
+|---|---|---|
+| **Groq (Nuvem)** | servidores da Groq | obrigatória (`groqKey`) |
+| **Ollama (Local)** | na sua máquina, offline | nenhuma — a URL local basta |
+
+> ⚠️ Modelos locais grandes precisam de RAM/VRAM à altura. Um modelo 8B (ex.: `llama3`)
+> roda com ~8 GB de RAM; modelos de 70B+ exigem dezenas de GB. Confira o catálogo em
+> <https://ollama.com/library> e baixe um modelo que caiba na sua máquina.
+
+### Instalar e baixar um modelo
+
+1. Instale o Ollama em <https://ollama.com/download> (Windows, macOS ou Linux);
+2. Baixe um modelo no terminal:
+
+   ```bash
+   ollama pull llama3          # ~4,7 GB; roda com 8 GB de RAM
+   # alternativas: ollama pull llama3.1:8b | qwen2.5:7b | mistral
+   ```
+
+3. Confirme que o serviço está no ar (ele sobe sozinho após a instalação):
+
+   ```bash
+   ollama list
+   ```
+
+O endpoint compatível com OpenAI fica em `http://127.0.0.1:11434/v1`. O JARVIS usa esse
+endpoint para chat, streaming e tool calling — para as ferramentas funcionarem bem, prefira
+modelos com suporte a tools (`llama3.1`, `qwen2.5`, `mistral`).
+
+### Configurar o JARVIS
+
+1. Abra as configurações (⚙) → **Provedor de IA** → **Ollama (Local)**;
+2. **URL base**: `http://127.0.0.1:11434/v1` (padrão);
+3. **Modelo local**: o nome exato que aparece no `ollama list` (ex.: `llama3` ou `llama3:8b`);
+4. **Testar conexão** confirma o serviço no ar e lista os modelos baixados;
+5. **Salvar**.
+
+Também dá para editar direto no `config.json`:
+
+```json
+{
+  "provider": "ollama",
+  "ollamaUrl": "http://127.0.0.1:11434/v1",
+  "ollamaModel": "llama3",
+  "groqKey": "sua-chave-continua-aqui"
+}
+```
+
+A chave da Groq continua guardada: voltar para **Groq (Nuvem)** não exige reconfigurar nada.
+O TTS não muda — Piper (local) e Edge TTS continuam como estão, e as ferramentas seguem no
+backend Python (porta 8000).
+
+### Se o Ollama não estiver rodando
+
+Nada quebra: o chat devolve um erro claro (*"Ollama falhou… Verifique se o Ollama está
+rodando"*), as ferramentas locais continuam funcionando e o botão **Testar conexão** mostra o
+motivo. Para subir o serviço manualmente: `ollama serve`.
 
 ## Personalidade (JARVIS autêntico)
 

@@ -9,6 +9,13 @@
 #define MyAppURL "https://github.com/openjarvis"
 #define MyAppExeName "JARVIS.exe"
 
+; Pasta com o resultado do PyInstaller. Permite build paralelo sem tocar em
+; dist\ (que fica travada quando o JARVIS está aberto):
+;   ISCC.exe /DSourceDir=.build\dist installer.iss
+#ifndef SourceDir
+  #define SourceDir "dist"
+#endif
+
 [Setup]
 AppId={{B8F3A9C4-5D2E-4DA1-9F67-3A1C8E2D5B00}
 AppName={#MyAppName}
@@ -42,7 +49,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; ── JARVIS (backend + interface + voz) ──────────────────────────
 ; O JARVIS.exe (PyInstaller) já carrega tudo: backend, UI, Piper, onnxruntime.
 ; Copia a pasta inteira dist/JARVIS/ (inclui _internal e todas as dependências).
-Source: "dist\JARVIS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\JARVIS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

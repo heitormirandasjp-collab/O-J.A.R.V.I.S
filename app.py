@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -28,6 +29,11 @@ APP_DIR = Path(__file__).resolve().parent
 BACKEND_URL = os.environ.get("JARVIS_BACKEND", "http://127.0.0.1:8000")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+
+# provedores de IA do chat: "groq" (nuvem) ou "ollama" (modelos locais, endpoint OpenAI)
+AI_PROVIDERS = ("groq", "ollama")
+OLLAMA_URL = "http://127.0.0.1:11434/v1"
+OLLAMA_MODEL = "llama3"
 
 # System prompt (personalidade): fonte única em system_prompt.txt — o MESMO arquivo é
 # lido pelo server.js. Abaixo vêm as regras operacionais (ferramentas, anti-alucinação,
@@ -228,6 +234,25 @@ def strip_html(s: str) -> str:
     return _TAG_RE.sub("", _SCRIPT_STYLE_RE.sub(" ", s))
 
 
+# CSP da UI principal: só recursos locais (o backend de ferramentas é a única origem extra).
+_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; "
+    "connect-src 'self' http://127.0.0.1:8000 http://localhost:8000; "
+    "worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+)
+_LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
+
+
+def _host_name(value: str) -> str:
+    """Extrai o nome do Host ignorando a porta (aceita IPv6 entre colchetes)."""
+    host = (value or "").strip().lower()
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end] if end > 0 else host
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
+
 app = FastAPI(title="JARVIS")
 app.add_middleware(
     CORSMiddleware,
@@ -239,12 +264,29 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def _host_guard(request: Request, call_next):
+    """Bloqueia DNS rebinding: a API local só responde a um Host loopback.
+
+    Sem isso, um site malicioso podia apontar o DNS para 127.0.0.1 e falar com
+    a UI/backend local usando o navegador do usuário.
+    """
+    host = request.headers.get("host")
+    if host and _host_name(host) not in _LOOPBACK_NAMES:
+        security_log("host", f"Host recusado: {host}", blocked=True)
+        return JSONResponse({"error": "host não permitido"}, status_code=403)
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def _security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    # ar.html carrega Three.js/MediaPipe de CDN: fica sem CSP restritiva.
+    if not request.url.path.endswith("/ar.html"):
+        response.headers.setdefault("Content-Security-Policy", _CSP)
     return response
 
 
@@ -294,6 +336,104 @@ def clamp_tts_voice(v: Any, engine: str = TTS_DEFAULT_ENGINE) -> str:
     return name or TTS_DEFAULT_VOICE.get(clamp_tts_engine(engine), "")
 
 
+def clamp_provider(v: Any) -> str:
+    """Só "groq" ou "ollama" entram na configuração."""
+    p = str(v or "").strip().lower()
+    return p if p in AI_PROVIDERS else "groq"
+
+
+def clamp_ollama_url(v: Any) -> str:
+    """URL base do Ollama (compatível com OpenAI): http(s), sem barra no fim."""
+    url = str(v or "").strip()[:300].rstrip("/")
+    return url if re.fullmatch(r"https?://\S+", url) else OLLAMA_URL
+
+
+def clamp_model_name(v: Any) -> str:
+    """Nome do modelo local: letras, números, ponto, hífen, underscore, dois-pontos e barra."""
+    return re.sub(r"[^A-Za-z0-9._:/\-]", "", str(v or ""))[:120]
+
+
+@dataclass(frozen=True)
+class AIProvider:
+    """Conexão com o provedor de IA escolhido: Groq (nuvem) ou Ollama (local).
+
+    Os dois falam o mesmo protocolo (OpenAI chat completions), então o agente,
+    as ferramentas e o streaming não precisam saber qual está ativo.
+    """
+
+    name: str
+    base_url: str
+    api_key: str
+    models: list[str]
+
+    @property
+    def label(self) -> str:
+        return "Groq" if self.name == "groq" else "Ollama"
+
+    @property
+    def configured(self) -> bool:
+        """Ollama local não exige chave; a Groq, sim."""
+        return bool(self.base_url) and (self.name == "ollama" or bool(self.api_key))
+
+    @property
+    def chat_url(self) -> str:
+        base = self.base_url.rstrip("/")
+        if self.name == "ollama" and not base.endswith("/v1"):
+            base += "/v1"
+        return base + "/chat/completions"
+
+    def headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+
+def resolve_provider(cfg: dict[str, Any]) -> AIProvider:
+    """Monta o provedor a partir do config.json (padrão: Groq)."""
+    if clamp_provider(cfg.get("provider")) == "ollama":
+        return AIProvider(
+            name="ollama",
+            base_url=clamp_ollama_url(cfg.get("ollamaUrl")),
+            api_key="",
+            models=[clamp_model_name(cfg.get("ollamaModel")) or OLLAMA_MODEL],
+        )
+    return AIProvider(
+        name="groq",
+        base_url=GROQ_URL.rsplit("/chat/completions", 1)[0],
+        api_key=str(cfg.get("groqKey") or ""),
+        models=[str(cfg["groqModel"])] if cfg.get("groqModel") else list(GROQ_MODELS),
+    )
+
+
+def test_ollama(url: Any = "") -> dict[str, Any]:
+    """Testa o Ollama local sem levantar exceção (a UI mostra o erro amigável)."""
+    base = clamp_ollama_url(url or OLLAMA_URL)
+    try:
+        r = requests.get(base + "/models", timeout=4)
+        if r.status_code != 200:
+            return {
+                "ok": False,
+                "url": base,
+                "models": [],
+                "error": f"Ollama respondeu HTTP {r.status_code} em {base}/models.",
+            }
+        data = r.json() if r.content else {}
+        items = data.get("data") or data.get("models") or []
+        models = [str(i.get("id") or i.get("name") or "") for i in items if isinstance(i, dict)]
+        return {"ok": True, "url": base, "models": [m for m in models if m], "error": None}
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "url": base,
+            "models": [],
+            "error": (
+                f"Não consegui falar com o Ollama em {base} ({type(exc).__name__}). "
+                "Verifique se ele está rodando: ollama serve"
+            ),
+        }
+
+
 def load_config() -> dict[str, Any]:
     """Lê a configuração; se a chave não estiver no arquivo atual, procura nos antigos."""
     data = _read_config_file(config_path())
@@ -303,8 +443,11 @@ def load_config() -> dict[str, Any]:
     weather = {k: v for k, v in (data or {}).items() if isinstance(k, str) and k.startswith("weather_")}
     cfg = {
         **weather,
+        "provider": clamp_provider(data.get("provider", "groq")),
         "groqKey": data.get("groqKey", ""),
         "groqModel": data.get("groqModel", ""),
+        "ollamaUrl": clamp_ollama_url(data.get("ollamaUrl", OLLAMA_URL)),
+        "ollamaModel": clamp_model_name(data.get("ollamaModel", "")),
         "continuous_listen_minutes": clamp_minutes(data.get("continuous_listen_minutes", 5)),
         "tts_engine": clamp_tts_engine(data.get("tts_engine", TTS_DEFAULT_ENGINE)),
         "tts_voice": clamp_tts_voice(data.get("tts_voice", ""), data.get("tts_engine", "")),
@@ -317,8 +460,11 @@ def load_config() -> dict[str, Any]:
             if old.get("groqKey"):
                 cfg = {
                     **weather,
+                    "provider": cfg["provider"],
                     "groqKey": old.get("groqKey", ""),
                     "groqModel": old.get("groqModel", "") or cfg["groqModel"],
+                    "ollamaUrl": cfg["ollamaUrl"],
+                    "ollamaModel": cfg["ollamaModel"],
                     "continuous_listen_minutes": clamp_minutes(
                         old.get("continuous_listen_minutes", cfg["continuous_listen_minutes"])
                     ),
@@ -1633,6 +1779,7 @@ async def api_chat(request: Request) -> StreamingResponse:
     # o prompt de personalidade é sempre o nosso (ignora o que o front mandar)
     messages = [{"role": "system", "content": SYSTEM_PROMPT_FULL}] + messages
     cfg = load_config()
+    provider = resolve_provider(cfg)
 
     # 1) confirmação pendente de desligamento/reinício (segurança)
     confirmed = _take_power_confirmation(messages)
@@ -1648,7 +1795,7 @@ async def api_chat(request: Request) -> StreamingResponse:
     user_text = str(last_user.get("content") or "") if last_user else ""
     pre_tools: list[tuple[dict[str, Any], dict[str, Any]]] = []
     power_done = confirmed_result is not None  # já executou nesta ordem: não rearmar
-    if cfg["groqKey"] and not confirmed:
+    if provider.configured and not confirmed:
         critical = detect_tool(user_text)
         if critical and critical["name"] in ("power", "power-cancel"):
             cresult = run_tool(critical)
@@ -1846,10 +1993,10 @@ async def api_chat(request: Request) -> StreamingResponse:
         )
     _memory_save(user_text, "chat")
 
-    # 3) sem chave da Groq: caminho local (regex + ferramenta) devolve o resultado cru
+    # 3) sem provedor configurado: caminho local (regex + ferramenta) devolve o resultado cru
     local_tool = None
     local_result = None
-    if not cfg["groqKey"]:
+    if not provider.configured:
         local_tool = detect_tool(user_text)
         if local_tool:
             local_result = run_tool(local_tool)
@@ -1860,8 +2007,8 @@ async def api_chat(request: Request) -> StreamingResponse:
         for _tool, _res in pre_tools:
             yield sse("tool", {"name": _res["name"], "ok": _res["ok"], "summary": _res["summary"]})
 
-        if not cfg["groqKey"]:
-            if greeting_brief:      # "bom dia" sem Groq: briefing local, sem inventar nada
+        if not provider.configured:
+            if greeting_brief:      # "bom dia" sem provedor: briefing local, sem inventar nada
                 yield sse("start", {"provider": "local-tools", "model": "briefing"})
                 for i in range(0, len(greeting_brief), 28):
                     yield sse("delta", {"t": greeting_brief[i : i + 28]})
@@ -1885,14 +2032,14 @@ async def api_chat(request: Request) -> StreamingResponse:
             yield sse(
                 "error",
                 {
-                    "message": "Nenhuma chave da Groq configurada. Abra as Configurações (engrenagem) e cole sua chave de console.groq.com/keys.",
+                    "message": "Nenhum provedor de IA configurado. Abra as Configurações (engrenagem) e cole a chave da Groq ou selecione o Ollama local.",
                     "tried": [],
                 },
             )
             yield sse("done", {})
             return
 
-        models = [cfg["groqModel"]] if cfg["groqModel"] else GROQ_MODELS
+        models = provider.models
         errors: list[str] = []
         fatal = False
 
@@ -1914,8 +2061,8 @@ async def api_chat(request: Request) -> StreamingResponse:
                 }
                 try:
                     r = requests.post(
-                        GROQ_URL,
-                        headers={"Authorization": f"Bearer {cfg['groqKey']}", "Content-Type": "application/json"},
+                        provider.chat_url,
+                        headers=provider.headers(),
                         json=body,
                         stream=True,
                         timeout=(15, 300),
@@ -1938,7 +2085,7 @@ async def api_chat(request: Request) -> StreamingResponse:
                     break
 
                 if not started:
-                    yield sse("start", {"provider": "groq", "model": model})
+                    yield sse("start", {"provider": provider.name, "model": model})
                     started = True
 
                 calls: dict[int, dict[str, Any]] = {}
@@ -2043,7 +2190,7 @@ async def api_chat(request: Request) -> StreamingResponse:
                     )
 
             if answered:
-                yield sse("done", {"provider": "groq", "model": model})
+                yield sse("done", {"provider": provider.name, "model": model})
                 return
             if failed and not fatal:
                 continue  # tenta o próximo modelo
@@ -2051,10 +2198,15 @@ async def api_chat(request: Request) -> StreamingResponse:
                 break
             # esgotou as rodadas de ferramentas sem resposta final
             yield sse("delta", {"t": " Não consegui concluir com as ferramentas disponíveis, Comandante."})
-            yield sse("done", {"provider": "groq", "model": model})
+            yield sse("done", {"provider": provider.name, "model": model})
             return
 
-        yield sse("error", {"message": "Groq falhou: " + " | ".join(errors[-2:]), "tried": errors})
+        hint = (
+            f" Verifique se o Ollama está rodando (ollama serve) em {provider.base_url}."
+            if provider.name == "ollama"
+            else ""
+        )
+        yield sse("error", {"message": f"{provider.label} falhou: " + " | ".join(errors[-2:]) + hint, "tried": errors})
         yield sse("done", {})
 
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
@@ -2064,9 +2216,22 @@ async def api_chat(request: Request) -> StreamingResponse:
 @app.get("/api/status")
 async def api_status() -> JSONResponse:
     cfg = load_config()
+    provider = resolve_provider(cfg)
     return JSONResponse(
         {
+            "provider": {
+                "name": provider.name,
+                "label": provider.label,
+                "configured": provider.configured,
+                "url": provider.base_url,
+                "model": provider.models[0] if provider.models else "",
+            },
+            # mantido para compatibilidade com HUDs/clientes antigos
             "groq": {"configured": bool(cfg["groqKey"]), "key": mask(cfg["groqKey"]), "model": cfg["groqModel"] or "auto"},
+            "ollama": {
+                "url": cfg["ollamaUrl"],
+                "model": cfg["ollamaModel"] or OLLAMA_MODEL,
+            },
             "continuous_listen_minutes": cfg["continuous_listen_minutes"],
             "tts_engine": cfg["tts_engine"],
             "tts_voice": cfg["tts_voice"],
@@ -2084,12 +2249,16 @@ async def api_config_get() -> JSONResponse:
 async def api_config_masked() -> JSONResponse:
     """Config com a chave MASCARADA — seguro para exibir/logar (nunca devolve o segredo)."""
     cfg = load_config()
+    provider = resolve_provider(cfg)
     return JSONResponse(
         {
+            "provider": provider.name,
             "groqKey": mask(cfg["groqKey"]),
             "groqModel": cfg["groqModel"],
+            "ollamaUrl": cfg["ollamaUrl"],
+            "ollamaModel": cfg["ollamaModel"],
             "continuous_listen_minutes": cfg["continuous_listen_minutes"],
-            "configured": bool(cfg["groqKey"]),
+            "configured": provider.configured,
             "tts_engine": cfg["tts_engine"],
             "tts_voice": cfg["tts_voice"],
         }
@@ -2103,6 +2272,12 @@ async def api_config_post(request: Request) -> JSONResponse:
     except Exception:  # noqa: BLE001
         return JSONResponse({"error": "json inválido"}, status_code=400)
     cfg = load_config()
+    if body.get("provider") is not None:
+        cfg["provider"] = clamp_provider(body.get("provider"))
+    if isinstance(body.get("ollamaUrl"), str):
+        cfg["ollamaUrl"] = clamp_ollama_url(body["ollamaUrl"])
+    if isinstance(body.get("ollamaModel"), str):
+        cfg["ollamaModel"] = clamp_model_name(body["ollamaModel"])
     if isinstance(body.get("groqKey"), str):
         key = body["groqKey"].strip()
         # nunca grava um placeholder mascarado por cima da chave real
@@ -2123,14 +2298,29 @@ async def api_config_post(request: Request) -> JSONResponse:
     if body.get("tts_voice") is not None:
         cfg["tts_voice"] = clamp_tts_voice(body.get("tts_voice"), cfg["tts_engine"])
     save_config(cfg)
+    provider = resolve_provider(cfg)
     return JSONResponse(
         {
             "ok": True,
+            "provider": provider.name,
+            "ollamaUrl": cfg["ollamaUrl"],
+            "ollamaModel": cfg["ollamaModel"],
             "continuous_listen_minutes": cfg["continuous_listen_minutes"],
             "tts_engine": cfg["tts_engine"],
             "tts_voice": cfg["tts_voice"],
         }
     )
+
+
+@app.post("/api/ollama/test")
+async def api_ollama_test(request: Request) -> JSONResponse:
+    """Testa a conexão com o Ollama local (nunca derruba o app: erro vira JSON)."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    url = body.get("url") if isinstance(body, dict) else None
+    return JSONResponse(test_ollama(url))
 
 
 # ── estáticos ───────────────────────────────────────────────────────────
@@ -2152,7 +2342,9 @@ async def static_files(path: str):
     if rel in ("", "/"):
         rel = "index.html"
     target = (PUBLIC_DIR / rel).resolve()
-    if not str(target).startswith(str(PUBLIC_DIR.resolve())) or not target.is_file():
+    root = PUBLIC_DIR.resolve()
+    # is_relative_to evita o furo do prefixo: ".../publicX" também começava com ".../public".
+    if not target.is_relative_to(root) or not target.is_file():
         return Response("404", status_code=404, media_type="text/plain")
     data = target.read_bytes()
     headers = {}

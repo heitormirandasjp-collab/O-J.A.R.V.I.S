@@ -181,21 +181,31 @@ function renderActivity() {
       r: Math.random() * 1.3 + 0.3, s: Math.random() * 0.22 + 0.04, p: Math.random() * 6.28,
     }));
   }
-  init();
-  addEventListener('resize', init);
-  (function loop(t) {
+  // Com movimento reduzido as estrelas ficam paradas (e sem gastar frames).
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  function draw(t) {
+    const still = reduced.matches;
     ctx.clearRect(0, 0, w, h);
     for (const p of pts) {
-      p.y -= p.s;
-      if (p.y < -4) { p.y = h + 4; p.x = Math.random() * w; }
-      const tw = 0.45 + 0.55 * Math.abs(Math.sin(t / 900 + p.p));
+      if (!still) {
+        p.y -= p.s;
+        if (p.y < -4) { p.y = h + 4; p.x = Math.random() * w; }
+      }
+      const tw = still ? 0.7 : 0.45 + 0.55 * Math.abs(Math.sin(t / 900 + p.p));
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.r, 0, 6.283);
       ctx.fillStyle = `rgba(140, 215, 255, ${tw * 0.75})`;
       ctx.fill();
     }
-    requestAnimationFrame(loop);
-  })(0);
+  }
+  function frame(t) {
+    draw(t || 0);
+    if (!reduced.matches) requestAnimationFrame(frame);
+  }
+  init();
+  frame(0);
+  addEventListener('resize', () => { init(); if (reduced.matches) draw(0); });
+  reduced.addEventListener?.('change', () => frame(0));
 })();
 
 /* ── áudio reativo do globo (voz → bola) ─────────
@@ -315,294 +325,505 @@ for (const evName of ['pointerdown', 'keydown']) {
     if (ac && ac.state === 'suspended') ac.resume().catch(() => {});
   }, { passive: true });
 }
-
-/* ── globo 3D (Three.js): arrastar gira, scroll dá zoom, inércia, volta ao centro ── */
+/* ── esfera de partículas (Three.js): malha branca que se deforma como slime ── */
+/* O mouse pega a superfície, puxa o caroço e solta: uma mola por deformação
+   devolve o volume com um balanço curto. Nada de textura nem malha triangular:
+   as partículas continuam sendo o material do desenho. */
 function globeThree(c) {
-  const CYAN = 0x3fd0ff;
-  const BLUE = 0x4d8dff;
-  const AMBER = 0xffb648;
-  const HOME = 5.4;
-  const renderer = new THREE.WebGLRenderer({ canvas: c, alpha: true, antialias: true });
+  const renderer = new THREE.WebGLRenderer({ canvas: c, alpha: false, antialias: true });
+  renderer.setClearColor(0x000000, 1);
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+  const HOME = 4.15;
   camera.position.set(0, 0, HOME);
   const group = new THREE.Group();
+  group.rotation.set(0.14, 0.42, 0);
   scene.add(group);
 
-  // núcleo brilhante + halo (o brilho sobe com a voz)
-  const core = new THREE.Mesh(
-    new THREE.SphereGeometry(1.1, 48, 48),
-    new THREE.MeshBasicMaterial({ color: CYAN, transparent: true, opacity: 0.14 }),
-  );
-  group.add(core);
-  const halo = new THREE.Mesh(
-    new THREE.SphereGeometry(1.5, 32, 32),
-    new THREE.MeshBasicMaterial({ color: BLUE, transparent: true, opacity: 0.05, side: THREE.BackSide }),
-  );
-  group.add(halo);
+  /* hash de inteiros: jitter e variação por partícula sem tabela */
+  const hash = (x, y) => {
+    let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+  };
 
-  // malhas girando em sentidos diferentes
-  const wire = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(1.32, 2),
-    new THREE.MeshBasicMaterial({ color: CYAN, wireframe: true, transparent: true, opacity: 0.3 }),
-  );
-  group.add(wire);
-  const wire2 = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(1.75, 1),
-    new THREE.MeshBasicMaterial({ color: AMBER, wireframe: true, transparent: true, opacity: 0.13 }),
-  );
-  group.add(wire2);
+  /* ── malha ────────────────────────────────────────────────────────────────
+     Linhas de latitude com passo de longitude proporcional ao raio do paralelo:
+     as células ficam do mesmo tamanho no equador e no polo, então a malha se lê
+     como malha e o polo não empelota partículas. */
+  const RINGS = 84;
+  const PER = 268;
+  const verts = [];
+  const rands = [];
+  const rings = [];
+  for (let i = 0; i < RINGS; i++) {
+    const lat = -Math.PI / 2 + ((i + 0.5) / RINGS) * Math.PI;
+    const cl = Math.cos(lat);
+    const n = Math.max(3, Math.round(PER * cl));
+    const step = (Math.PI * 2) / n;
+    const half = (i % 2) * 0.5;              /* linhas alternadas: malha hexagonal */
+    rings.push({ start: verts.length / 3, n });
+    for (let j = 0; j < n; j++) {
+      const lon = (j + half + (hash(i, j) - 0.5) * 0.22) * step;
+      const la = lat + (hash(j + 91, i) - 0.5) * 0.30 * (Math.PI / RINGS);
+      const ca = Math.cos(la);
+      verts.push(ca * Math.cos(lon), Math.sin(la), ca * Math.sin(lon));
+      rands.push(hash(i * 131 + j, 5));
+    }
+  }
 
-  // três anéis orbitais concêntricos: interno (ciano, rápido), médio (azul) e externo (âmbar, lento)
-  const RING = [
-    { color: CYAN, radius: 1.95, speed: 0.0052, tilt: Math.PI / 2, yaw: 0 },
-    { color: BLUE, radius: 2.32, speed: 0.0028, tilt: Math.PI / 2 + 0.45, yaw: 0.6 },
-    { color: AMBER, radius: 2.72, speed: 0.0012, tilt: Math.PI / 2 + 0.95, yaw: 1.15 },
-  ];
-  const rings = RING.map((cfg) => {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(cfg.radius, 0.009, 8, 200),
-      new THREE.MeshBasicMaterial({ color: cfg.color, transparent: true, opacity: 0.55 }),
-    );
-    ring.rotation.x = cfg.tilt;
-    ring.rotation.y = cfg.yaw;
-    group.add(ring);
-    return ring;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
+  geo.setAttribute('aRand', new THREE.BufferAttribute(new Float32Array(rands), 1));
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1.6);
+
+  /* Rede: cada nó liga ao vizinho da mesma linha e aos dois mais próximos da
+     linha de cima. Os fios passam pela mesma deformação do shader, então o
+     caroço estica a malha junto com os pontos. */
+  const linePos = [];
+  const lineRand = [];
+  const seg = (a, b) => {
+    linePos.push(verts[a * 3], verts[a * 3 + 1], verts[a * 3 + 2]);
+    linePos.push(verts[b * 3], verts[b * 3 + 1], verts[b * 3 + 2]);
+    lineRand.push(rands[a], rands[b]);
+  };
+  for (let i = 0; i < rings.length; i++) {
+    const r = rings[i];
+    for (let j = 0; j < r.n; j++) seg(r.start + j, r.start + ((j + 1) % r.n));
+    if (i === rings.length - 1) continue;
+    const up = rings[i + 1];
+    const m = up.n;
+    for (let j = 0; j < r.n; j++) {
+      const k = (j + (i % 2) * 0.5) * (m / r.n) - ((i + 1) % 2) * 0.5;
+      const k0 = ((Math.floor(k) % m) + m) % m;
+      seg(r.start + j, up.start + k0);
+      seg(r.start + j, up.start + (k0 + 1) % m);
+    }
+  }
+  const netGeo = new THREE.BufferGeometry();
+  netGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(linePos), 3));
+  netGeo.setAttribute('aRand', new THREE.BufferAttribute(new Float32Array(lineRand), 1));
+  netGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1.6);
+
+  /* Deformação compartilhada pelos dois passes (núcleo e halo): até 4 covas,
+     cada uma com raio, amplitude radial e puxão tangencial. uDentRad = 0 desliga. */
+  const dentUniforms = {
+    uDentPos: { value: new Float32Array(12) },
+    uDentAmp: { value: new Float32Array(4) },
+    uDentRad: { value: new Float32Array(4) },
+    uDentPull: { value: new Float32Array(12) },
+  };
+
+  const DEFORM = `
+      uniform vec3 uDentPos[4];
+      uniform float uDentAmp[4];
+      uniform float uDentRad[4];
+      uniform vec3 uDentPull[4];
+
+      vec3 deform(vec3 base) {
+        float amp = 0.0;
+        vec3 pull = vec3(0.0);
+        for (int i = 0; i < 4; i++) {
+          float r = uDentRad[i];
+          if (r <= 0.0001) continue;
+          vec3 d = base - uDentPos[i];
+          float w = exp(-dot(d, d) / (r * r));
+          amp += uDentAmp[i] * w;
+          /* o puxão decai mais rápido que a cova: a língua de massa sai estreita
+             no meio e não vira bico na silhueta */
+          pull += uDentPull[i] * w * w;
+        }
+        return base * (1.0 + amp) + pull;
+      }
+  `;
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({
+      uTime: { value: 0 },
+      uVoice: { value: 0 },
+      uScale: { value: 900 },
+    }, dentUniforms),
+    vertexShader: `
+      attribute float aRand;
+      uniform float uTime;
+      uniform float uVoice;
+      uniform float uScale;
+      ${DEFORM}
+      varying float vLit;
+      varying float vRand;
+      varying float vFace;
+      varying float vDepth;
+      void main() {
+        vec3 base = normalize(position);
+        vec3 p = deform(base);
+        p *= 1.0 + 0.004 * sin(uTime * 0.9) + 0.010 * uVoice * sin(uTime * 3.2 + aRand * 6.2832);
+
+        /* normal por diferenças finitas na própria deformação: o caroço pega luz
+           na encosta em vez de virar um decalque chapado na silhueta */
+        vec3 up = abs(base.y) > 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+        vec3 t1 = normalize(cross(up, base));
+        vec3 t2 = cross(base, t1);
+        float eps = 0.035;
+        vec3 pa = deform(normalize(base + t1 * eps));
+        vec3 pb = deform(normalize(base + t2 * eps));
+        vec3 nrm = normalize(cross(pa - p, pb - p));
+        if (dot(nrm, base) < 0.0) nrm = -nrm;
+
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        vec3 n = normalize(normalMatrix * nrm);
+        float key = max(dot(n, normalize(vec3(-0.50, 0.62, 0.60))), 0.0);
+        float fill = max(dot(n, normalize(vec3(0.68, -0.34, 0.40))), 0.0);
+        float low = max(dot(n, normalize(vec3(0.16, -0.78, -0.44))), 0.0);
+        float spec = pow(max(dot(n, normalize(vec3(-0.30, 0.74, 0.60))), 0.0), 26.0);
+        float face = abs(n.z);
+        float lit = 0.12 + 1.02 * pow(key, 1.05) + 0.26 * fill + 0.16 * low
+                  + 0.30 * spec + 0.42 * pow(1.0 - face, 2.4);
+        vLit = clamp(lit * (0.88 + 0.12 * face), 0.0, 1.25) + uVoice * 0.24;
+        vRand = aRand;
+        vFace = face;
+        float depth = max(-mv.z, 0.05);
+        vDepth = depth;
+        float size = (0.0058 + 0.0024 * aRand) * (1.0 + 0.10 * uVoice);
+        gl_PointSize = clamp(uScale * size / depth, 1.6, 30.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      uniform float uVoice;
+      varying float vLit;
+      varying float vRand;
+      varying float vFace;
+      varying float vDepth;
+      void main() {
+        vec2 q = gl_PointCoord - 0.5;
+        float d2 = dot(q, q);
+        if (d2 > 0.25) discard;
+        float a = smoothstep(0.25, 0.02, d2);
+        float lit = clamp(vLit, 0.0, 1.3);
+        float spark = smoothstep(0.70, 1.0, sin(uTime * 3.0 + vRand * 43.0)) * uVoice;
+        vec3 cool = vec3(0.70, 0.76, 0.87);
+        vec3 warm = vec3(1.00, 0.990, 0.960);
+        vec3 col = mix(cool, warm, smoothstep(0.08, 0.78, lit));
+        float fog = mix(0.74, 1.0, smoothstep(6.6, 2.6, vDepth));
+        float amp = (0.24 + 1.06 * min(lit, 1.0)) * fog + 0.50 * spark;
+        float graze = 0.60 + 0.40 * vFace;
+        float alpha = a * (0.22 + 0.60 * min(lit, 1.0)) * fog * graze;
+        gl_FragColor = vec4(min(col * amp, vec3(1.18)), alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: true,
+    depthTest: true,
+    blending: THREE.NormalBlending,
   });
 
-  // Partículas ao redor (5000 pontos): o buffer `position` guarda a POSIÇÃO DE REPOUSO
-  // (a esfera). Só o pulso (respiração) e a voz mexem no tamanho/brilho, calculados no
-  // vertexShader — nada de reescrever 15000 floats na CPU a cada frame.
-  const N = 5000;
-  const pos = new Float32Array(N * 3);
-  const phase = new Float32Array(N);
-  for (let i = 0; i < N; i++) {
-    const r = 1.5 + Math.random() * 1.7;
-    const th = Math.random() * Math.PI * 2;
-    const ph = Math.acos(2 * Math.random() - 1);
-    pos[i * 3] = r * Math.sin(ph) * Math.cos(th);
-    pos[i * 3 + 1] = r * Math.cos(ph);
-    pos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
-    phase[i] = Math.random() * Math.PI * 2;
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
+  const ball = new THREE.Points(geo, mat);
+  ball.frustumCulled = false;
+  group.add(ball);
 
-  // Partículas: posição de repouso guardada no buffer position (sem deformação).
-  // vGlow espelha a reação do globo: pule (respiração) e voz crescendo.
-  const pointsMat = new THREE.ShaderMaterial({
-    uniforms: {
-      uColor: { value: new THREE.Color(0xa8ecff) },
-      uTime: { value: 0 },
-      uSize: { value: 0.028 },
-      uHalfHeight: { value: 400 },
-      uOpacity: { value: 0.85 },
-      uPulse: { value: 0.018 },
-      uVoice: { value: 0 },
-    },
-    vertexShader: [
-      'attribute float aPhase;',
-      'uniform float uTime;',
-      'uniform float uSize;',
-      'uniform float uHalfHeight;',
-      'uniform float uPulse;',
-      'uniform float uVoice;',
-      'varying float vGlow;',
-      'void main() {',
-      '  float breath = 1.0 + uPulse * sin(uTime * 1.5 + aPhase)',
-      '                    + uVoice * 0.35 * sin(uTime * 6.0 + aPhase * 7.0);',
-      '  vGlow = clamp(uVoice * 0.8 + uPulse * 0.5, 0.0, 1.0);',
-      '  vec3 p = position * breath;',
-      '  vec4 mv = modelViewMatrix * vec4(p, 1.0);',
-      '  gl_PointSize = uSize * (1.0 + vGlow * 1.6) * (uHalfHeight / max(0.1, -mv.z));',
-      '  gl_Position = projectionMatrix * mv;',
-      '}',
-    ].join('\n'),
-    fragmentShader: [
-      'uniform vec3 uColor;',
-      'uniform float uOpacity;',
-      'varying float vGlow;',
-      'void main() {',
-      '  vec2 d = gl_PointCoord - vec2(0.5);',
-      '  float dist = length(d);',
-      '  if (dist > 0.5) discard;',
-      '  float soft = smoothstep(0.5, 0.0, dist);',
-      '  vec3 col = mix(uColor, vec3(1.0), vGlow * 0.7);',
-      '  gl_FragColor = vec4(col, soft * uOpacity * (0.75 + vGlow * 0.65));',
-      '}',
-    ].join('\n'),
+  /* Halo: segundo passe da mesma nuvem, pontos largos em soma aditiva. Tira o
+     aspecto de areia e mantém a malha legível por cima do brilho. */
+  const glowMat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({
+      uScale: mat.uniforms.uScale,
+      uVoice: mat.uniforms.uVoice,
+    }, dentUniforms),
+    vertexShader: `
+      uniform float uScale;
+      uniform float uVoice;
+      attribute float aRand;
+      ${DEFORM}
+      varying float vA;
+      void main() {
+        vec3 base = normalize(position);
+        vec3 p = deform(base);
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        vec3 n = normalize(normalMatrix * base);
+        float key = max(dot(n, normalize(vec3(-0.50, 0.62, 0.60))), 0.0);
+        float fill = max(dot(n, normalize(vec3(0.68, -0.34, 0.40))), 0.0);
+        float depth = max(-mv.z, 0.05);
+        vA = (0.10 + 0.72 * key + 0.18 * fill) * (0.90 + 0.30 * uVoice);
+        float size = (0.028 + 0.013 * aRand) * (1.0 + 0.10 * uVoice);
+        gl_PointSize = clamp(uScale * size / depth, 3.0, 96.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      varying float vA;
+      void main() {
+        vec2 q = gl_PointCoord - 0.5;
+        float d2 = dot(q, q);
+        if (d2 > 0.25) discard;
+        float a = pow(smoothstep(0.25, 0.0, d2), 1.7);
+        gl_FragColor = vec4(vec3(0.78, 0.84, 0.95) * (a * vA * 0.085), 1.0);
+      }
+    `,
     transparent: true,
     depthWrite: false,
+    depthTest: true,
+    blending: THREE.AdditiveBlending,
   });
-  const uni = pointsMat.uniforms;
-  const points = new THREE.Points(geo, pointsMat);
-  group.add(points);
+  const glowPts = new THREE.Points(geo, glowMat);
+  glowPts.frustumCulled = false;
+  glowPts.renderOrder = 1;
+  group.add(glowPts);
 
-  // EXPLOSÃO radial (100 partículas): disparo único quando o wake word é detectado
-  const BURST_N = 100;
-  const BURST_MS = 800;
-  const burstPos = new Float32Array(BURST_N * 3);
-  const burstDir = new Float32Array(BURST_N * 3);
-  for (let i = 0; i < BURST_N; i++) {
-    const th = Math.random() * Math.PI * 2;
-    const ph = Math.acos(2 * Math.random() - 1);
-    burstDir[i * 3] = Math.sin(ph) * Math.cos(th);
-    burstDir[i * 3 + 1] = Math.cos(ph);
-    burstDir[i * 3 + 2] = Math.sin(ph) * Math.sin(th);
+  /* Camada de fios: a malha propriamente dita. Só o hemisfério voltado para a
+     câmera aparece, senão a rede de trás atravessa a da frente e vira moiré. */
+  const netMat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({ uVoice: mat.uniforms.uVoice }, dentUniforms),
+    vertexShader: `
+      attribute float aRand;
+      uniform float uVoice;
+      ${DEFORM}
+      varying float vF;
+      varying float vR;
+      void main() {
+        vec3 base = normalize(position);
+        vec3 p = deform(base);
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        vec3 n = normalize(normalMatrix * base);
+        float face = dot(n, normalize(-mv.xyz));
+        vF = smoothstep(-0.02, 0.34, face) * (0.40 + 0.60 * smoothstep(0.10, 1.0, face));
+        vR = aRand;
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      uniform float uVoice;
+      varying float vF;
+      varying float vR;
+      void main() {
+        float a = vF * (0.13 + 0.06 * vR) * (1.0 + 0.8 * uVoice);
+        gl_FragColor = vec4(vec3(0.80, 0.85, 0.96), a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    blending: THREE.AdditiveBlending,
+  });
+  const net = new THREE.LineSegments(netGeo, netMat);
+  net.frustumCulled = false;
+  net.renderOrder = 2;
+  group.add(net);
+
+  /* ── deformações ──────────────────────────────────────────────────────────
+     Cada cova é uma mola subamortecida. Arrastar move o centro e cresce o
+     alvo; soltar zera o alvo e a superfície volta balançando, sem corte seco. */
+  const MAXD = 4;
+  const dents = [];
+  for (let i = 0; i < MAXD; i++) {
+    dents.push({
+      pos: new THREE.Vector3(0, 1, 0),
+      amp: 0, ampV: 0, ampT: 0,
+      pull: new THREE.Vector3(),
+      pullT: new THREE.Vector3(),
+      pullV: new THREE.Vector3(),
+      rad: 0,
+      k: 150, damp: 15,
+    });
   }
-  const burstGeo = new THREE.BufferGeometry();
-  burstGeo.setAttribute('position', new THREE.BufferAttribute(burstPos, 3));
-  const burst = new THREE.Points(
-    burstGeo,
-    new THREE.PointsMaterial({ color: 0xffffff, size: 0.07, transparent: true, opacity: 0 }),
-  );
-  group.add(burst);
-  let burstStart = -1;
-  window.__jarvisGlobeBurst = () => { burstStart = performance.now(); };
+  const MAX_PULL = 0.40;
 
-  // cor do núcleo conforme o contexto: ciano (idle), âmbar (processando), vermelho (erro)
-  const MODE_COLORS = { idle: CYAN, busy: AMBER, error: 0xff4d4d };
-  const coreCol = new THREE.Color(CYAN);
-  const targetCol = new THREE.Color(CYAN);
-  const wireMix = new THREE.Color(BLUE);
+  function springVec(v, tgt, vel, k, damp, dt) {
+    vel.x += (-k * (v.x - tgt.x) - damp * vel.x) * dt;
+    vel.y += (-k * (v.y - tgt.y) - damp * vel.y) * dt;
+    vel.z += (-k * (v.z - tgt.z) - damp * vel.z) * dt;
+    v.addScaledVector(vel, dt);
+    const len = v.length();
+    if (len > MAX_PULL) v.multiplyScalar(MAX_PULL / len);
+  }
+
+  function stepDent(d, dt) {
+    d.ampV += (-d.k * (d.amp - d.ampT) - d.damp * d.ampV) * dt;
+    d.amp += d.ampV * dt;
+    if (d.amp > 0.40) { d.amp = 0.40; d.ampV = 0; }
+    if (d.amp < -0.18) { d.amp = -0.18; d.ampV = 0; }
+    springVec(d.pull, d.pullT, d.pullV, d.k * 1.6, d.damp * 1.4, dt);
+    if (d !== grab && d.rad > 0
+      && Math.abs(d.amp) < 0.0015 && Math.abs(d.ampV) < 0.02
+      && d.pull.lengthSq() < 1e-6 && d.pullV.lengthSq() < 1e-6) {
+      d.amp = 0; d.ampV = 0; d.pull.set(0, 0, 0); d.pullV.set(0, 0, 0);
+      d.rad = 0;
+    }
+  }
 
   const host = c.parentElement || c;
-  let dragging = false;
-  let lx = 0;
-  let ly = 0;
-  let vx = 0;
-  let vy = 0;
+  let grab = null;
+  const grabStart = new THREE.Vector3();
+  const lastWake = new THREE.Vector3();
+  let wakeIdx = 1;
+  let downX = 0;
+  let downY = 0;
   let zoom = HOME;
   let targetZoom = HOME;
   let lastInput = performance.now();
-  host.style.cursor = 'grab';
 
-  console.log('globo carregou', N, 'partículas');
+  const rayO = new THREE.Vector3();
+  const rayD = new THREE.Vector3();
+  const invM = new THREE.Matrix4();
+  const tmpV = new THREE.Vector3();
 
-  host.addEventListener('pointerdown', (e) => {
-    dragging = true;
-    lx = e.clientX;
-    ly = e.clientY;
+  /* raio → esfera unitária, em espaço de objeto (o grupo gira: converter antes) */
+  function pick(clientX, clientY) {
+    const rect = c.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return null;
+    const nx = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = -(((clientY - rect.top) / rect.height) * 2 - 1);
+    camera.updateMatrixWorld();
+    group.updateMatrixWorld();
+    rayD.set(nx, ny, 0.5).unproject(camera).sub(camera.position).normalize();
+    rayO.copy(camera.position);
+    invM.copy(group.matrixWorld).invert();
+    rayO.applyMatrix4(invM);
+    rayD.transformDirection(invM).normalize();
+    const b = rayO.dot(rayD);
+    const disc = b * b - (rayO.lengthSq() - 1);
+    if (disc < 0) return null;
+    const t = -b - Math.sqrt(disc);
+    if (t <= 0) return null;
+    return new THREE.Vector3().copy(rayO).addScaledVector(rayD, t).normalize();
+  }
+
+  function onDown(e) {
+    if (e.button !== undefined && e.button !== 0 && e.pointerType !== 'touch') return;
+    const hit = pick(e.clientX, e.clientY);
+    if (!hit) return;
+    e.preventDefault();
+    const d = dents[0];
+    d.rad = 0.40;
+    d.k = 150;
+    d.damp = 15;
+    d.pos.copy(hit);
+    d.amp = Math.max(d.amp, 0.03);
+    d.ampT = 0.12;                        /* responde no toque, antes de arrastar */
+    d.pull.set(0, 0, 0);
+    d.pullT.set(0, 0, 0);
+    d.pullV.set(0, 0, 0);
+    grab = d;
+    grabStart.copy(hit);
+    lastWake.copy(hit);
+    downX = e.clientX;
+    downY = e.clientY;
+    try { host.setPointerCapture(e.pointerId); } catch { /* sem captura: segue no host */ }
     host.style.cursor = 'grabbing';
     lastInput = performance.now();
-  });
-  addEventListener('pointerup', () => {
-    dragging = false;
-    host.style.cursor = 'grab';
-  });
-  addEventListener('pointermove', (e) => {
-    if (!dragging) return;
-    const dx = e.clientX - lx;
-    const dy = e.clientY - ly;
-    vx = dx * 0.006;
-    vy = dy * 0.006;
-    lx = e.clientX;
-    ly = e.clientY;
-    group.rotation.y += vx;
-    group.rotation.x = Math.max(-1.2, Math.min(1.2, group.rotation.x + vy));
+  }
+
+  function onMove(e) {
+    if (!grab) {
+      host.style.cursor = pick(e.clientX, e.clientY) ? 'grab' : 'default';
+      return;
+    }
+    const hit = pick(e.clientX, e.clientY);
+    if (!hit) return;
+    const d = grab;
+    d.pos.copy(hit);
+    const stretch = Math.min(1, Math.hypot(e.clientX - downX, e.clientY - downY) / 190);
+    d.ampT = 0.12 + 0.26 * stretch;
+    /* o caroço se inclina para onde o mouse puxa */
+    d.pullT.copy(hit).sub(grabStart).multiplyScalar(0.34);
+    if (hit.distanceTo(lastWake) > 0.30) {
+      const w = dents[1 + (wakeIdx++ % (MAXD - 1))];
+      w.rad = 0.30;
+      w.k = 300;
+      w.damp = 26;
+      w.pos.copy(lastWake);
+      w.amp = 0.06;
+      w.ampT = 0;
+      w.pull.set(0, 0, 0);
+      w.pullT.set(0, 0, 0);
+      w.pullV.set(0, 0, 0);
+      lastWake.copy(hit);
+    }
     lastInput = performance.now();
-  });
+  }
+
+  function onUp() {
+    if (!grab) return;
+    grab.ampT = 0;
+    grab.pullT.set(0, 0, 0);
+    grab = null;
+    host.style.cursor = 'default';
+    lastInput = performance.now();
+  }
+
+  host.addEventListener('pointerdown', onDown);
+  host.addEventListener('pointermove', onMove);
+  addEventListener('pointerup', onUp);
+  addEventListener('pointercancel', onUp);
+  host.addEventListener('lostpointercapture', onUp);
   host.addEventListener('wheel', (e) => {
     e.preventDefault();
-    targetZoom = Math.max(3.4, Math.min(9.5, targetZoom + e.deltaY * 0.0022));
+    targetZoom = Math.max(3.2, Math.min(9, targetZoom + e.deltaY * 0.002));
     lastInput = performance.now();
   }, { passive: false });
 
-  // O canvas preenche TODO o container: clientWidth x clientHeight e
-  // camera.aspect = largura/altura. No modo foco o container é 100vw x 100vh,
-  // então a esfera ocupa a tela inteira (pode ficar levemente oval em widescreen).
   function resize() {
     const w = Math.max(1, host.clientWidth);
     const h = Math.max(1, host.clientHeight);
-    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    renderer.setPixelRatio(dpr);
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    // o tamanho do ponto é calculado em pixels do framebuffer (como no PointsMaterial)
-    uni.uHalfHeight.value = (h * renderer.getPixelRatio()) * 0.5;
+    /* partículas em pixels de dispositivo: mesmo grão em qualquer tela */
+    mat.uniforms.uScale.value = (h * dpr) / (2 * Math.tan((camera.fov * Math.PI) / 360));
   }
   resize();
   addEventListener('resize', resize);
-  // redimensiona também quando o container muda (ex.: entrar/sair do modo foco)
   if (window.ResizeObserver) {
     try { new ResizeObserver(resize).observe(host); } catch { /* sem observer */ }
   }
   window.__jarvisGlobeResize = resize;
 
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  const uPos = dentUniforms.uDentPos.value;
+  const uAmp = dentUniforms.uDentAmp.value;
+  const uRad = dentUniforms.uDentRad.value;
+  const uPull = dentUniforms.uDentPull.value;
+  let glow = 0;
+  let prev = 0;
   (function loop(t) {
     t = t || 0;
-    const level = audioLevel();   // 0..1: voz do usuário (mic) ou voz do JARVIS (TTS)
+    const dt = prev ? Math.min(0.033, Math.max(0.0005, (t - prev) * 0.001)) : 0.016;
+    prev = t;
 
-    if (!dragging) {
-      vx *= 0.95; // inércia: continua girando e desacelerando
-      vy *= 0.95;
-      group.rotation.y += vx + 0.0018 + level * 0.02;   // ROTAÇÃO acelera com a voz
-      group.rotation.x = Math.max(-1.2, Math.min(1.2, group.rotation.x + vy));
-      if (performance.now() - lastInput > 3000) {
-        // volta ao centro após 3 s parado
-        group.rotation.x += (0 - group.rotation.x) * 0.035;
-        targetZoom += (HOME - targetZoom) * 0.05;
-      }
+    const level = audioLevel();   /* 0..1: voz do JARVIS (TTS) ou do usuário (mic) */
+    const target = Math.max(level, window.isSpeaking ? 0.55 : 0);
+    glow += (target - glow) * (target > glow ? 0.18 : 0.04);
+    const still = reducedMotion.matches;
+
+    for (let i = 0; i < MAXD; i++) {
+      const d = dents[i];
+      if (d.rad > 0) stepDent(d, dt);
+      uPos[i * 3] = d.pos.x; uPos[i * 3 + 1] = d.pos.y; uPos[i * 3 + 2] = d.pos.z;
+      uAmp[i] = d.amp;
+      uRad[i] = d.rad;
+      uPull[i * 3] = d.pull.x; uPull[i * 3 + 1] = d.pull.y; uPull[i * 3 + 2] = d.pull.z;
+    }
+
+    /* giro só quando a mão está livre: com o dedo na massa ela fica parada */
+    if (!grab && !still) {
+      group.rotation.y += 0.00045 + glow * 0.006;
+    }
+    if (performance.now() - lastInput > 3000) {
+      targetZoom += (HOME - targetZoom) * 0.05;
     }
     zoom += (targetZoom - zoom) * 0.09;
     camera.position.z = zoom;
-    wire.rotation.y -= 0.0042 + level * 0.02;
-    wire.rotation.x += 0.0013;
-    wire2.rotation.y += 0.0026 + level * 0.015;
-    points.rotation.y += 0.0009 + level * 0.01;
-    // cada anel gira na sua própria velocidade (interno rápido → externo lento)
-    rings.forEach((r, i) => { r.rotation.z += RING[i].speed + level * 0.004; });
 
-    // explosão do wake word: 100 partículas saem do centro e somem em ~800 ms
-    if (burstStart >= 0) {
-      const p = (t - burstStart) / BURST_MS;
-      if (p >= 1) {
-        burstStart = -1;
-        burst.material.opacity = 0;
-      } else {
-        const rad = 0.4 + p * 3.8;
-        for (let i = 0; i < BURST_N; i++) {
-          burstPos[i * 3] = burstDir[i * 3] * rad;
-          burstPos[i * 3 + 1] = burstDir[i * 3 + 1] * rad;
-          burstPos[i * 3 + 2] = burstDir[i * 3 + 2] * rad;
-        }
-        burstGeo.attributes.position.needsUpdate = true;
-        burst.material.opacity = 0.95 * (1 - p) ** 1.6;
-        burst.material.size = 0.07 + p * 0.05;
-      }
-    }
-
-    // cor do núcleo pelo contexto: ciano (idle) → âmbar (processando) → vermelho (erro)
-    const mode = window.__jarvisCoreMode || 'idle';
-    const boost = mode === 'idle' ? 0 : 0.18;
-    targetCol.setHex(MODE_COLORS[mode] || CYAN);
-    coreCol.lerp(targetCol, 0.06);
-    core.material.color.copy(coreCol);
-    halo.material.color.copy(coreCol);
-    wire.material.color.copy(coreCol).lerp(wireMix, 0.4);
-
-    // voz → ESCALA (pulso), BRILHO e OSCILAÇÃO das partículas
-    group.scale.setScalar(1 + level * 0.3);
-    // respiração do núcleo: independente do mouse (pulso próprio)
-    const breathCore = 1 + 0.035 * Math.sin(t * 0.0016) + level * 0.22;
-    core.scale.setScalar(breathCore);
-    halo.scale.setScalar(1 + 0.02 * Math.sin(t * 0.0011 + 1.7) + level * 0.16);
-    core.material.opacity = 0.14 + level * 0.3 + boost;
-    halo.material.opacity = 0.05 + level * 0.12 + boost * 0.5;
-    wire.material.opacity = 0.3 + level * 0.45;
-    // as partículas recebem pulso (respiração) e voz por uniform, na GPU
-    uni.uTime.value = t * 0.001;
-    uni.uVoice.value = level;
-    uni.uSize.value = 0.028 + level * 0.03;
-    uni.uOpacity.value = 0.85 * (0.75 + level * 0.5);
+    mat.uniforms.uTime.value = still ? 0 : t * 0.001;
+    mat.uniforms.uVoice.value = glow;
     renderer.render(scene, camera);
     requestAnimationFrame(loop);
   })(0);
 }
 
 function globeBurst() {
-  if (typeof window.__jarvisGlobeBurst === 'function') window.__jarvisGlobeBurst();
+  /* sem explosão: a esfera só acende com a voz */
 }
 
 /* Cor do núcleo: 'idle' (ciano), 'busy' (âmbar, o LLM está respondendo),
@@ -805,7 +1026,7 @@ function setCoreMode(mode, revertMs = 0) {
       }
     } else {
       ctx.fillStyle = 'rgba(127,157,189,0.6)';
-      ctx.font = '11px Rajdhani, sans-serif';
+      ctx.font = '11px "Segoe UI", system-ui, sans-serif';
       ctx.fillText('coletando dados reais...', 8, h / 2);
     }
     requestAnimationFrame(loop);
@@ -824,8 +1045,7 @@ function setCoreMode(mode, revertMs = 0) {
     }
   }
   build($('#sideWave'), 20);
-  build($('#pillWave'), 8);
-  build($('#pillWave2'), 8);
+  build($('#pillWave'), 9);
 })();
 
 /* ── gauges (valores reais) ────────────────────── */
