@@ -89,6 +89,8 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='JARVIS',
+    # ícone do .exe/atalho: gerado do logo.jpg em 16→256 px (assets/jarvis.ico)
+    icon=str(_HERE / 'assets' / 'jarvis.ico'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -211,6 +211,14 @@ body.focus-mode-active .talkbar { opacity: 0; pointer-events: none; }
   display: grid; place-items: center;
 }
 .brand-mark svg { display: block; }
+/* logo do JARVIS (logo.jpg): quadrado arredondado, sem distorcer a imagem */
+.brand-logo {
+  display: block;
+  width: 30px; height: 30px;
+  border-radius: 8px;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px var(--hair-2);
+}
 .brand-text { min-width: 0; }
 .brand-text h1 {
   font-size: 14.5px;

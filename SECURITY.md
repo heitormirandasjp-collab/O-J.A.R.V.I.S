@@ -98,7 +98,7 @@ set JARVIS_READ_ROOTS=D:\Projetos;E:\Docs
 
 ## 6. Configuração e segredos
 
-- `config.json` (chave da Groq) é gravado com permissão **0600** (`mode 0o600` / `os.chmod`)
+- `config.json` (chaves da Groq e da NVIDIA NIM) é gravado com permissão **0600** (`mode 0o600` / `os.chmod`)
   — só o usuário lê.
 - `GET /api/config/masked` (e `POST /config/masked`) devolve a chave **mascarada**
   (`gsk••••7890`), nunca o segredo — seguro para exibir/logar.

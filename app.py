@@ -1,5 +1,5 @@
 """
-JARVIS — servidor principal (UI + chat com Groq).
+JARVIS — servidor principal (UI + chat com Groq, NVIDIA NIM ou Ollama).
 É este arquivo que roda dentro do JARVIS.exe (via launcher.py).
 
 Ferramentas e voz continuam no backend (backend/main.py, porta 8000);
@@ -30,10 +30,22 @@ BACKEND_URL = os.environ.get("JARVIS_BACKEND", "http://127.0.0.1:8000")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
 
-# provedores de IA do chat: "groq" (nuvem) ou "ollama" (modelos locais, endpoint OpenAI)
-AI_PROVIDERS = ("groq", "ollama")
+# provedores de IA do chat: "groq" e "nvidia" (nuvem) ou "ollama" (modelos locais).
+# Os três falam o protocolo OpenAI (chat completions), então o agente, as ferramentas e o
+# streaming não precisam saber qual está ativo.
+AI_PROVIDERS = ("groq", "nvidia", "ollama")
 OLLAMA_URL = "http://127.0.0.1:11434/v1"
 OLLAMA_MODEL = "llama3"
+
+# NVIDIA NIM (build.nvidia.com): catálogo hospedado da NVIDIA em integrate.api.nvidia.com,
+# OpenAI-compatível. A chave começa com "nvapi-" e vai no header Authorization, como na Groq.
+# A lista abaixo é a ordem de fallback: o primeiro modelo que responder bem atende o chat.
+NVIDIA_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_MODELS = [
+    "meta/llama-3.3-70b-instruct",   # aceita function calling
+    "openai/gpt-oss-120b",           # aceita function calling
+    "meta/llama-3.1-8b-instruct",    # reserva leve
+]
 
 # System prompt (personalidade): fonte única em system_prompt.txt — o MESMO arquivo é
 # lido pelo server.js. Abaixo vêm as regras operacionais (ferramentas, anti-alucinação,
@@ -337,7 +349,7 @@ def clamp_tts_voice(v: Any, engine: str = TTS_DEFAULT_ENGINE) -> str:
 
 
 def clamp_provider(v: Any) -> str:
-    """Só "groq" ou "ollama" entram na configuração."""
+    """Só "groq", "nvidia" ou "ollama" entram na configuração."""
     p = str(v or "").strip().lower()
     return p if p in AI_PROVIDERS else "groq"
 
@@ -368,11 +380,11 @@ class AIProvider:
 
     @property
     def label(self) -> str:
-        return "Groq" if self.name == "groq" else "Ollama"
+        return {"groq": "Groq", "nvidia": "NVIDIA NIM"}.get(self.name, "Ollama")
 
     @property
     def configured(self) -> bool:
-        """Ollama local não exige chave; a Groq, sim."""
+        """Ollama local não exige chave; Groq e NVIDIA NIM, sim."""
         return bool(self.base_url) and (self.name == "ollama" or bool(self.api_key))
 
     @property
@@ -391,7 +403,17 @@ class AIProvider:
 
 def resolve_provider(cfg: dict[str, Any]) -> AIProvider:
     """Monta o provedor a partir do config.json (padrão: Groq)."""
-    if clamp_provider(cfg.get("provider")) == "ollama":
+    chosen = clamp_provider(cfg.get("provider"))
+    if chosen == "nvidia":
+        # a chave da NVIDIA NIM fica só no header: nunca é logada nem devolvida ao HUD
+        model = clamp_model_name(cfg.get("nvidiaModel"))
+        return AIProvider(
+            name="nvidia",
+            base_url=NVIDIA_URL,
+            api_key=str(cfg.get("nvidiaKey") or ""),
+            models=[model] if model else list(NVIDIA_MODELS),
+        )
+    if chosen == "ollama":
         return AIProvider(
             name="ollama",
             base_url=clamp_ollama_url(cfg.get("ollamaUrl")),
@@ -446,6 +468,8 @@ def load_config() -> dict[str, Any]:
         "provider": clamp_provider(data.get("provider", "groq")),
         "groqKey": data.get("groqKey", ""),
         "groqModel": data.get("groqModel", ""),
+        "nvidiaKey": data.get("nvidiaKey", ""),
+        "nvidiaModel": data.get("nvidiaModel", ""),
         "ollamaUrl": clamp_ollama_url(data.get("ollamaUrl", OLLAMA_URL)),
         "ollamaModel": clamp_model_name(data.get("ollamaModel", "")),
         "continuous_listen_minutes": clamp_minutes(data.get("continuous_listen_minutes", 5)),
@@ -463,6 +487,8 @@ def load_config() -> dict[str, Any]:
                     "provider": cfg["provider"],
                     "groqKey": old.get("groqKey", ""),
                     "groqModel": old.get("groqModel", "") or cfg["groqModel"],
+                    "nvidiaKey": cfg["nvidiaKey"],
+                    "nvidiaModel": cfg["nvidiaModel"],
                     "ollamaUrl": cfg["ollamaUrl"],
                     "ollamaModel": cfg["ollamaModel"],
                     "continuous_listen_minutes": clamp_minutes(
@@ -2032,7 +2058,7 @@ async def api_chat(request: Request) -> StreamingResponse:
             yield sse(
                 "error",
                 {
-                    "message": "Nenhum provedor de IA configurado. Abra as Configurações (engrenagem) e cole a chave da Groq ou selecione o Ollama local.",
+                    "message": "Nenhum provedor de IA configurado. Abra as Configurações (engrenagem) e cole a chave da Groq ou da NVIDIA NIM, ou selecione o Ollama local.",
                     "tried": [],
                 },
             )
@@ -2201,11 +2227,14 @@ async def api_chat(request: Request) -> StreamingResponse:
             yield sse("done", {"provider": provider.name, "model": model})
             return
 
-        hint = (
-            f" Verifique se o Ollama está rodando (ollama serve) em {provider.base_url}."
-            if provider.name == "ollama"
-            else ""
-        )
+        hint = ""
+        if provider.name == "ollama":
+            hint = f" Verifique se o Ollama está rodando (ollama serve) em {provider.base_url}."
+        elif provider.name == "nvidia":
+            hint = (
+                " Confira a chave em https://build.nvidia.com/settings (ela começa com nvapi-)"
+                " e se o modelo configurado ainda está no catálogo."
+            )
         yield sse("error", {"message": f"{provider.label} falhou: " + " | ".join(errors[-2:]) + hint, "tried": errors})
         yield sse("done", {})
 
@@ -2255,6 +2284,8 @@ async def api_config_masked() -> JSONResponse:
             "provider": provider.name,
             "groqKey": mask(cfg["groqKey"]),
             "groqModel": cfg["groqModel"],
+            "nvidiaKey": mask(cfg["nvidiaKey"]),
+            "nvidiaModel": cfg["nvidiaModel"],
             "ollamaUrl": cfg["ollamaUrl"],
             "ollamaModel": cfg["ollamaModel"],
             "continuous_listen_minutes": cfg["continuous_listen_minutes"],
@@ -2287,6 +2318,15 @@ async def api_config_post(request: Request) -> JSONResponse:
             cfg["groqKey"] = key
     if isinstance(body.get("groqModel"), str):
         cfg["groqModel"] = body["groqModel"].strip()[:120]
+    if isinstance(body.get("nvidiaKey"), str):
+        nkey = body["nvidiaKey"].strip()
+        # mesma regra da Groq: placeholder mascarado nunca sobrescreve a chave real
+        if _looks_masked(nkey):
+            security_log("config", "tentativa de gravar chave da NVIDIA NIM mascarada", blocked=True)
+        else:
+            cfg["nvidiaKey"] = nkey
+    if isinstance(body.get("nvidiaModel"), str):
+        cfg["nvidiaModel"] = body["nvidiaModel"].strip()[:120]
     if body.get("continuous_listen_minutes") is not None:
         cfg["continuous_listen_minutes"] = clamp_minutes(body.get("continuous_listen_minutes"))
     if body.get("tts_engine") is not None:
@@ -2330,6 +2370,9 @@ MIME = {
     ".js": "text/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
     ".png": "image/png",
+    # logo do HUD (public/logo.jpg): sem o MIME certo o navegador baixava em vez de exibir
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
     ".ico": "image/x-icon",
 }
 

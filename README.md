@@ -1,7 +1,9 @@
 # JARVIS — Command Center
 
+<p align="center"><img src="logo.jpg" width="180" alt="Logo do JARVIS"></p>
+
 Assistente pessoal com HUD animado, voz pt-BR (Piper), ferramentas locais reais e chat
-com streaming via **Groq** (nuvem) ou **Ollama** (modelos locais).
+com streaming via **Groq** ou **NVIDIA NIM** (nuvem) ou **Ollama** (modelos locais).
 
 > Nada aqui usa o backend do OpenJarvis. Só o modelo de voz vem de lá
 > (`pt-BR-razo-medium.onnx`, na raiz do projeto).
@@ -9,11 +11,12 @@ com streaming via **Groq** (nuvem) ou **Ollama** (modelos locais).
 ## O que é o JARVIS
 
 Assistente pessoal **local** para Windows, com HUD animado, globo 3D, voz pt-BR (Piper/Edge
-TTS), chat com streaming via **Groq** (nuvem) ou **Ollama** (modelos locais) e ferramentas
-de verdade na máquina (comandos, leitura de arquivos, clima, notícias, agenda, memória
-persistente). Com o Ollama, o texto não sai da máquina; com a Groq, o único serviço externo
-de texto é a API dela — e, se você escolher o Edge TTS, a voz usa a API da Microsoft. Não é
-o OpenJarvis — projeto próprio, sem backend remoto.
+TTS), chat com streaming via **Groq**, **NVIDIA NIM** (nuvem) ou **Ollama** (modelos
+locais) e ferramentas de verdade na máquina (comandos, leitura de arquivos, clima,
+notícias, agenda, memória persistente). Com o Ollama, o texto não sai da máquina; com a
+Groq ou a NVIDIA NIM, o único serviço externo de texto é a API do provedor escolhido — e,
+se você escolher o Edge TTS, a voz usa a API da Microsoft. Não é o OpenJarvis — projeto
+próprio, sem backend remoto.
 
 ## Arquitetura
 
@@ -25,10 +28,10 @@ o OpenJarvis — projeto próprio, sem backend remoto.
             │ fetch (mesma origem)
             ▼
 ┌─────────────────────────┐      ┌──────────────────────────┐
-│ Servidor da UI :8755    │ ───▶ │ API da Groq (chat com    │
-│ app.py (Python)         │      │ streaming, tool calling) │
-│  ou server.js (Node)    │      └──────────────────────────┘
-└───────────┬─────────────┘
+│ Servidor da UI :8755    │ ───▶ │ API do provedor: Groq,   │
+│ app.py (Python)         │      │ NVIDIA NIM ou Ollama —   │
+│  ou server.js (Node)    │      │ chat + tool calling      │
+└───────────┬─────────────┘      └──────────────────────────┘
             │ BACKEND_URL = http://127.0.0.1:8000
             ▼
 ┌─────────────────────────┐      ┌──────────────────────────┐
@@ -76,7 +79,7 @@ Opcional: a **memória com embeddings** (busca semântica em `/memory/*`) exige 
 fora do `requirements.txt` — `sentence-transformers` (usa PyTorch) ou `chromadb` (reserva
 ONNX MiniLM, leve). Sem nenhum dos dois, o backend sobe, mas a memória responde erro.
 
-Depois, configure o provedor de IA (chave da Groq ou Ollama local — seção **Configuração**)
+Depois, configure o provedor de IA (chave da Groq/NVIDIA NIM ou Ollama local — seção **Configuração**)
 e abra `http://127.0.0.1:8755`.
 
 ## Configuração
@@ -86,9 +89,11 @@ Tudo fica em **`config.json`**, na raiz do projeto (no `.exe`, em
 
 | Chave | O que é | Padrão |
 |---|---|---|
-| `provider` | provedor do chat: `groq` (nuvem) ou `ollama` (local) | `groq` |
+| `provider` | provedor do chat: `groq`, `nvidia` (nuvem) ou `ollama` (local) | `groq` |
 | `groqKey` | chave da API da Groq — obrigatória quando o provedor é `groq` | — |
 | `groqModel` | modelo da Groq (a lista tem fallback interno) | vazio = modelos testados |
+| `nvidiaKey` | chave da NVIDIA NIM (`nvapi-…`) — obrigatória quando o provedor é `nvidia` | — |
+| `nvidiaModel` | id do modelo no catálogo da NVIDIA (ex.: `meta/llama-3.3-70b-instruct`) | vazio = modelos testados |
 | `ollamaUrl` | URL base do Ollama (compatível com OpenAI) | `http://127.0.0.1:11434/v1` |
 | `ollamaModel` | modelo local (nome exato do `ollama list`) | `llama3` |
 | `tts_engine` | motor de voz: `piper` ou `edge` | `piper` |
@@ -109,16 +114,17 @@ Depois cole a sua chave no campo **`groqKey`** do `config.json` novo. O
 exemplo.
 
 Como obter a chave: crie a conta em <https://console.groq.com>, gere a chave em
-<https://console.groq.com/keys> e cole na **engrenagem ⚙** das configurações do JARVIS (ou
-direto no `config.json`). Detalhes dos modelos e da voz em **"Chave da Groq"** e **"Voz
-(Piper e Edge TTS)"** abaixo.
+<https://console.groq.com/keys> — ou, para a NVIDIA, em <https://build.nvidia.com/settings>
+— e cole na **engrenagem ⚙** das configurações do JARVIS (ou direto no `config.json`).
+Detalhes dos modelos e da voz em **"Chave da Groq"**, **"Chave da NVIDIA NIM"** e
+**"Voz (Piper e Edge TTS)"** abaixo.
 
 ## Uso
 
 Com o backend (8000) e a UI (8755) no ar, abra `http://127.0.0.1:8755` — ou use o `.exe` /
 app Electron, que sobem tudo sozinhos. O que dá pra fazer:
 
-- **Chat** com streaming via Groq ou Ollama e agente com tool calling (engrenagem ⚙ para provedor/chave/modelo);
+- **Chat** com streaming via Groq, NVIDIA NIM ou Ollama e agente com tool calling (engrenagem ⚙ para provedor/chave/modelo);
 - **Voz pt-BR**: dizer "Jarvis" acorda o assistente (escuta contínua configurável), com Piper
   (voz local) ou Edge TTS (neural, precisa internet);
 - **3D**: globo do núcleo (5.000 partículas; arrasto gira, com inércia e zoom), visualizador
@@ -267,13 +273,57 @@ Modelos testados com a chave atual (a lista tem fallback interno entre eles):
 Se `llama-3.3-70b-versatile` ainda existir na sua conta, escreva o nome dele no campo
 "Modelo" nas configurações.
 
+## Chave da NVIDIA NIM
+
+Engrenagem ⚙ → **Provedor de IA → NVIDIA NIM (Nuvem)** → cole a chave (`nvapi-…`) e, se
+quiser, o id do modelo. A chave fica em `config.json` com permissão **0600** (no `.exe`, em
+`%APPDATA%\JARVIS\config.json`) e nunca é devolvida ao HUD — só a máscara.
+
+Como obter:
+
+1. entre em <https://build.nvidia.com> e faça login (conta de desenvolvedor da NVIDIA);
+2. abra qualquer modelo do catálogo e clique em **Get API Key** — ou vá direto em
+   <https://build.nvidia.com/settings>;
+3. copie a chave (começa com `nvapi-`) e cole no JARVIS.
+
+O endpoint usado é `https://integrate.api.nvidia.com/v1/chat/completions` — o mesmo protocolo
+OpenAI do chat completions, com streaming e function calling. Modelos testados nesta ordem,
+com fallback interno:
+
+`meta/llama-3.3-70b-instruct` → `openai/gpt-oss-120b` → `meta/llama-3.1-8b-instruct`.
+
+O modelo precisa aceitar **function calling**, porque é assim que o JARVIS executa as
+ferramentas (comandos, clima, agenda…). Os dois primeiros aceitam; se um modelo escolhido não
+aceitar, a chamada volta 400 e o JARVIS tenta o próximo da lista.
+
+> A NVIDIA dá uma cota gratuita de testes por conta de desenvolvedor, mas **o texto da
+> conversa vai para os servidores dela** — como na Groq. Para nada sair da máquina, use o
+> Ollama.
+
+Erros comuns: **HTTP 401/403** = chave errada, expirada ou de outra conta (confira em
+`build.nvidia.com/settings`); **HTTP 404** no modelo = id fora do catálogo (troque no campo
+**Modelo** ou deixe vazio para usar a lista testada); **HTTP 429** = cota/limite de requisições
+atingido — espere um pouco ou troque de provedor.
+
+**Também vale editar o `config.json` direto:**
+
+```json
+{
+  "provider": "nvidia",
+  "nvidiaKey": "nvapi-sua-chave-aqui",
+  "nvidiaModel": "",
+  "groqKey": "sua-chave-da-groq-continua-aqui"
+}
+```
+
 ## Rodando com Ollama (modelos locais)
 
-O chat aceita dois provedores, escolhidos na **engrenagem ⚙ → Provedor de IA**:
+O chat aceita três provedores, escolhidos na **engrenagem ⚙ → Provedor de IA**:
 
 | Opção | Onde roda | Chave |
 |---|---|---|
 | **Groq (Nuvem)** | servidores da Groq | obrigatória (`groqKey`) |
+| **NVIDIA NIM (Nuvem)** | servidores da NVIDIA | obrigatória (`nvidiaKey`, `nvapi-…`) |
 | **Ollama (Local)** | na sua máquina, offline | nenhuma — a URL local basta |
 
 > ⚠️ Modelos locais grandes precisam de RAM/VRAM à altura. Um modelo 8B (ex.: `llama3`)
@@ -1063,6 +1113,33 @@ e tudo passa por validação no backend. Resumo do que foi endurecido:
 
 Detalhes completos, exemplos de log e as variáveis de ambiente para estender as proteções
 estão em **[SECURITY.md](SECURITY.md)**.
+
+## Mudanças recentes (v1.0.21)
+
+### Logo no app e no executável
+
+- o `logo.jpg` entrou no projeto: aparece no topo da barra lateral do HUD (`public/logo.jpg`,
+  30×30 com cantos arredondados e `object-fit: cover` — sem distorcer) e aqui no README;
+- o mesmo desenho virou ícone do `.exe` e do instalador (`assets/jarvis.ico`, gerado do
+  `logo.jpg` em 16 → 256 px): barra de tarefas, atalho da área de trabalho e "Adicionar ou
+  remover programas" deixam de mostrar o ícone genérico;
+- a marca em SVG que existia antes saiu do HTML; nada mais mudou no layout do HUD.
+
+### Provedor NVIDIA NIM (além de Groq e Ollama)
+
+- **Provedor de IA** na engrenagem ⚙ ganhou a opção **NVIDIA NIM (Nuvem)**, com campo de chave
+  (`nvapi-…`), campo de modelo opcional e o mesmo streaming/tool calling dos outros provedores;
+- endpoint `https://integrate.api.nvidia.com/v1` (OpenAI-compatível), com fallback
+  `meta/llama-3.3-70b-instruct` → `openai/gpt-oss-120b` → `meta/llama-3.1-8b-instruct`;
+- duas chaves novas no `config.json`: `nvidiaKey` e `nvidiaModel` (gravadas com 0600; o
+  `/config/masked` devolve só a máscara e o POST ignora placeholder mascarado, igual à Groq);
+- erro de provedor agora tem dica própria: 401/403 apontam para `build.nvidia.com/settings` e
+  a mensagem sugere conferir o modelo no catálogo.
+
+### Versão
+
+`v1.0.21` — instalador `JARVIS-Setup.exe` regerado com o ícone novo; o `.exe` continua
+autocontido (não precisa de Python instalado) e o clima da v1.0.20 segue valendo.
 
 ## Mudanças recentes (v1.0.20)
 

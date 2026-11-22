@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════
    JARVIS COMMAND CENTER — só dados reais
-   Chat: Groq.  Ferramentas e voz: backend Python (porta 8000).
+   Chat: Groq, NVIDIA NIM ou Ollama.  Ferramentas e voz: backend Python (porta 8000).
    ═══════════════════════════════════════════════════════════ */
 'use strict';
 
@@ -1352,7 +1352,7 @@ async function pollHealth() {
   } catch { /* já avisado no sysinfo */ }
 }
 
-/* ── provedor de IA (Groq na nuvem ou Ollama local) ─────────── */
+/* ── provedor de IA (Groq/NVIDIA NIM na nuvem ou Ollama local) ─────────── */
 async function refreshStatus() {
   try {
     const r = await fetch('/api/status', { cache: 'no-store' });
@@ -1366,7 +1366,7 @@ async function refreshStatus() {
     };
     state.provider = {
       name: prov.name || 'groq',
-      label: prov.label || (prov.name === 'ollama' ? 'Ollama' : 'Groq'),
+      label: prov.label || ({ ollama: 'Ollama', nvidia: 'NVIDIA NIM' })[prov.name] || 'Groq',
       configured: !!prov.configured,
       model: prov.model || 'auto',
     };
@@ -1390,7 +1390,7 @@ async function refreshStatus() {
     const chip = $('#llmChip');
     if (chip) chip.innerHTML = `<span class="dot ${state.provider.configured ? 'green' : 'red'} blink"></span>${state.provider.configured ? 'ATIVO' : 'SEM PROVEDOR'}`;
     const info = $('#llmInfo');
-    if (info) info.textContent = state.provider.configured ? 'Modelo ativo nas respostas do chat.' : 'Configure a Groq ou o Ollama para conversar (ferramentas já funcionam sem ele).';
+    if (info) info.textContent = state.provider.configured ? 'Modelo ativo nas respostas do chat.' : 'Configure a Groq, a NVIDIA NIM ou o Ollama para conversar (ferramentas já funcionam sem ele).';
     $('#opProvider').textContent = state.provider.configured ? state.provider.name : 'sem provedor';
     $('#opModel').textContent = state.provider.configured ? state.provider.model : '—';
     $('#engineLabel').textContent = state.provider.configured ? `${state.provider.name} · ${state.provider.model}` : 'sem provedor de IA';
@@ -2288,24 +2288,33 @@ function setEngineUI(eng) {
   }
 }
 
-/* mostra só os campos do provedor escolhido (Groq ↔ Ollama) */
+/* valor do <select> de provedor: só os três conhecidos entram */
+function providerValue(prov) {
+  return prov === 'ollama' || prov === 'nvidia' ? prov : 'groq';
+}
+
+/* mostra só os campos do provedor escolhido (Groq, NVIDIA NIM ou Ollama) */
 function setProviderUI(prov) {
-  const p = prov === 'ollama' ? 'ollama' : 'groq';
+  const p = providerValue(prov);
   const groq = $('#setGroqFields');
+  const nvidia = $('#setNvidiaFields');
   const ollama = $('#setOllamaFields');
-  if (groq) groq.hidden = p === 'ollama';
+  if (groq) groq.hidden = p !== 'groq';
+  if (nvidia) nvidia.hidden = p !== 'nvidia';
   if (ollama) ollama.hidden = p !== 'ollama';
   const msg = $('#ollamaTestMsg');
-  if (msg && p === 'groq') msg.textContent = '';
+  if (msg && p !== 'ollama') msg.textContent = '';
 }
 
 async function openSettings() {
   try {
     const r = await fetch('/api/config');
     const c = await r.json();
-    $('#setProvider').value = c.provider === 'ollama' ? 'ollama' : 'groq';
+    $('#setProvider').value = providerValue(c.provider);
     $('#setGroqKey').value = c.groqKey || '';
     $('#setGroqModel').value = c.groqModel || '';
+    $('#setNvidiaKey').value = c.nvidiaKey || '';
+    $('#setNvidiaModel').value = c.nvidiaModel || '';
     $('#setOllamaUrl').value = c.ollamaUrl || 'http://127.0.0.1:11434/v1';
     $('#setOllamaModel').value = c.ollamaModel || 'llama3';
     setProviderUI(c.provider);
@@ -2452,9 +2461,11 @@ $('#saveSettings').addEventListener('click', async () => {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      provider: $('#setProvider').value === 'ollama' ? 'ollama' : 'groq',
+      provider: providerValue($('#setProvider').value),
       groqKey: $('#setGroqKey').value.trim(),
       groqModel: $('#setGroqModel').value.trim(),
+      nvidiaKey: $('#setNvidiaKey').value.trim(),
+      nvidiaModel: $('#setNvidiaModel').value.trim(),
       ollamaUrl: $('#setOllamaUrl').value.trim(),
       ollamaModel: $('#setOllamaModel').value.trim(),
       continuous_listen_minutes: Number(settings.continuousMinutes) || 0,
@@ -2464,7 +2475,7 @@ $('#saveSettings').addEventListener('click', async () => {
   }).then((r) => r.json()).catch(() => ({}));
   if (saved.tts_engine) settings.ttsEngine = saved.tts_engine;
   if (saved.tts_voice) settings.voice = saved.tts_voice;
-  if (saved.provider) $('#setProvider').value = saved.provider === 'ollama' ? 'ollama' : 'groq';
+  if (saved.provider) $('#setProvider').value = providerValue(saved.provider);
   if (saved.ollamaUrl) $('#setOllamaUrl').value = saved.ollamaUrl;
   if (saved.ollamaModel !== undefined) $('#setOllamaModel').value = saved.ollamaModel;
   setProviderUI(saved.provider || $('#setProvider').value);

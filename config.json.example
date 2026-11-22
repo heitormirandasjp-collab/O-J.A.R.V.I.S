@@ -2,6 +2,8 @@
   "provider": "groq",
   "groqKey": "",
   "groqModel": "",
+  "nvidiaKey": "",
+  "nvidiaModel": "",
   "ollamaUrl": "http://127.0.0.1:11434/v1",
   "ollamaModel": "llama3",
   "continuous_listen_minutes": 5,
