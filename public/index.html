@@ -76,8 +76,8 @@
           <input id="viz3dInput" type="text" maxlength="200" placeholder="ex.: um carro vermelho" />
           <button id="viz3dGo">Ver</button>
         </div>
-        <button class="focus-btn" id="arBtn" title="Abre a câmera com um modelo 3D na sua mão"><span>📷</span> Ativar AR</button>
-        <button class="focus-btn" id="weatherBtn"><span>🌤️</span> Clima</button>
+        <button class="focus-btn" id="arBtn" title="Abre a câmera com um modelo 3D na sua mão">Ativar AR</button>
+        <button class="focus-btn" id="weatherBtn">Clima</button>
         <div class="weather-box" id="weatherBox" hidden>
           <div class="wx-head"><b id="wxCity">—</b><small id="wxSrc">—</small></div>
           <div class="wx-temp"><b id="wxTemp">—</b><small id="wxDesc">—</small></div>
@@ -89,7 +89,7 @@
           </div>
           <div class="wx-foot"><small>Medição</small><b id="wxMeasured">—</b></div>
         </div>
-        <button class="focus-btn" id="memoryBtn"><span>🧠</span> Memórias</button>
+        <button class="focus-btn" id="memoryBtn">Memórias</button>
         <div class="memory-box" id="memoryBox" hidden>
           <div class="mem-head"><b>MEMÓRIAS</b><small id="memTotal">—</small></div>
           <ul class="mem-list" id="memList"></ul>
@@ -98,12 +98,12 @@
             <button id="memReset" class="danger">Resetar tudo</button>
           </div>
         </div>
-        <button class="focus-btn" id="codeBtn"><span>💻</span> Programar</button>
+        <button class="focus-btn" id="codeBtn">Programar</button>
         <div class="viz3d-row" id="codeRow" hidden>
           <input id="codeInput" type="text" maxlength="500" placeholder="ex.: um site de portfólio" />
           <button id="codeGo">Gerar</button>
         </div>
-        <button class="focus-btn" id="newsBtn"><span>📰</span> Notícias</button>
+        <button class="focus-btn" id="newsBtn">Notícias</button>
         <div class="viz3d-row news-row" id="newsRow" hidden>
           <select id="newsSource">
             <option value="g1">G1</option>
@@ -116,7 +116,7 @@
           <div class="mem-head"><b>NOTÍCIAS</b><small id="newsInfo">—</small></div>
           <ul class="mem-list" id="newsList"></ul>
           <div class="mem-actions">
-            <button id="newsSpeak">🔈 Ouvir</button>
+            <button id="newsSpeak">Ouvir</button>
             <button id="newsRefresh">Atualizar</button>
           </div>
         </div>
@@ -144,7 +144,7 @@
             <input id="search" type="text" placeholder="Perguntar ao JARVIS..." />
             <kbd>⌘K</kbd>
           </label>
-          <button class="ico-btn" id="ttsQuickBtn" title="Voz do JARVIS (TTS)">🔈</button>
+          <button class="ico-btn" id="ttsQuickBtn" title="Voz do JARVIS (TTS)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/></svg></button>
           <button class="ico-btn" id="gearBtn" title="Configurações">⚙</button>
           <div class="operator">
             <div class="op-text"><b id="opModel">—</b><small id="opProvider">provedor</small></div>
@@ -199,8 +199,8 @@
         </div>
         <div class="ch-right">
           <span class="chip mini" id="chatState"><span class="dot green blink"></span>PRONTO</span>
-          <button class="ico-btn" id="ttsBtn" title="Voz do JARVIS (TTS)">🔈</button>
-          <button class="ico-btn" id="clearChat" title="Limpar">🗑</button>
+          <button class="ico-btn" id="ttsBtn" title="Voz do JARVIS (TTS)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/></svg></button>
+          <button class="ico-btn" id="clearChat" title="Limpar"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
           <button class="ico-btn" id="closeChat" title="Fechar">✕</button>
         </div>
       </header>
@@ -218,9 +218,26 @@
     <div class="modal">
       <header><b>PROVEDOR &amp; VOZ</b><button class="ico-btn" id="closeSettings">✕</button></header>
       <div class="modal-body">
-        <p class="hint">Chave da <b>Groq</b> (console.groq.com). Ela fica só em <code>config.json</code>, neste computador.</p>
-        <label>Groq API Key<input id="setGroqKey" type="password" placeholder="gsk_..." /></label>
-        <label>Modelo (opcional)<input id="setGroqModel" type="text" placeholder="padrão: openai/gpt-oss-120b" /></label>
+        <label>Provedor de IA
+          <select id="setProvider">
+            <option value="groq">Groq (Nuvem)</option>
+            <option value="ollama">Ollama (Local)</option>
+          </select>
+        </label>
+
+        <div id="setGroqFields">
+          <p class="hint">Chave da <b>Groq</b> (console.groq.com). Ela fica só em <code>config.json</code>, neste computador.</p>
+          <label>Groq API Key<input id="setGroqKey" type="password" placeholder="gsk_..." /></label>
+          <label>Modelo (opcional)<input id="setGroqModel" type="text" placeholder="padrão: openai/gpt-oss-120b" /></label>
+        </div>
+
+        <div id="setOllamaFields" hidden>
+          <p class="hint">Modelos locais pelo <b>Ollama</b> — nada sai da máquina e não precisa de chave. Instale em <code>ollama.com</code> e baixe um modelo: <code>ollama pull llama3</code>.</p>
+          <label>URL base<input id="setOllamaUrl" type="text" placeholder="http://127.0.0.1:11434/v1" autocomplete="off" /></label>
+          <label>Modelo local<input id="setOllamaModel" type="text" placeholder="llama3" autocomplete="off" /></label>
+          <button type="button" class="ghost-btn" id="testOllama">Testar conexão</button>
+          <p class="hint dim" id="ollamaTestMsg"></p>
+        </div>
 
         <label>Motor de voz
           <div class="seg" id="setTtsEngine">
@@ -241,7 +258,7 @@
         <label>Escuta contínua após "Jarvis" (minutos; <b>0</b> = infinito)
           <input id="setContinuousMin" type="number" min="0" max="1440" step="1" value="5" />
         </label>
-        <label>Cidade do clima (🌤️ Clima e "bom dia")
+        <label>Cidade do clima (Clima e "bom dia")
           <input id="setWeatherCity" type="text" placeholder="ex.: São Paulo, SP" autocomplete="off" />
         </label>
         <p class="hint dim" id="weatherCityHint"></p>

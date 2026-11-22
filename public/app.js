@@ -27,7 +27,7 @@ function saveLocal() {
 const state = {
   sys: null,
   health: null,
-  provider: { configured: false, model: 'auto' },
+  provider: { configured: false, model: 'auto', name: '', label: 'IA' },
   history: [],          // mensagens enviadas no chat
   turns: 0,             // respostas do JARVIS
   tools: 0,             // ferramentas executadas
@@ -53,7 +53,7 @@ function toast(msg) {
 }
 
 /* ── eventos reais (feed) ──────────────────────── */
-const ICONS = { info: '◈', ok: '✔', warn: '⚠', err: '✖', tool: '⌘', voice: '◉' };
+const ICONS = { info: '◈', ok: '✓', warn: '!', err: '×', tool: '›', voice: '◉' };
 const CLASS = { info: 'ico-blue', ok: 'ico-green', warn: 'ico-amber', err: 'ico-purple', tool: 'ico-cyan', voice: 'ico-cyan' };
 
 function pushEvent(kind, title, detail) {
@@ -848,9 +848,9 @@ function renderCore() {
   const h = state.health;
   const rows = [];
   if (state.provider.configured) {
-    rows.push({ i: 'Ⓖ', c: 'ico-cyan', b: 'Groq', s: `● ${state.provider.model}`, cls: 'ok' });
+    rows.push({ i: 'Ⓖ', c: 'ico-cyan', b: state.provider.label || 'IA', s: `● ${state.provider.model}`, cls: 'ok' });
   } else {
-    rows.push({ i: 'Ⓖ', c: 'ico-cyan', b: 'Groq', s: '● sem chave', cls: 'warn' });
+    rows.push({ i: 'Ⓖ', c: 'ico-cyan', b: state.provider.label || 'IA', s: '● sem provedor', cls: 'warn' });
   }
   if (s) {
     rows.push({ i: '◎', c: 'ico-green', b: 'CPU', s: `● ${s.cpu.percent}% · ${s.cpu.cores} threads`, cls: s.cpu.percent > 85 ? 'warn' : 'ok' });
@@ -892,7 +892,7 @@ function renderModules() {
       (m) => `<div class="agent-card${m.ok ? '' : ' done'}">
         <span class="a-ico ${m.c}">${m.i}</span>
         <div class="a-body"><b>${m.n}</b><small class="${m.ok ? 'ok' : 'mut'}">● ${esc(m.det)}</small></div>
-        ${m.ok ? '<div class="eq" data-eq-static></div>' : '<span class="big-check" style="color:var(--text-dim);text-shadow:none">✖</span>'}
+        ${m.ok ? '<div class="eq" data-eq-static></div>' : '<span class="big-check" style="color:var(--text-dim);text-shadow:none">×</span>'}
       </div>`,
     )
     .join('');
@@ -987,12 +987,24 @@ async function pollHealth() {
   } catch { /* já avisado no sysinfo */ }
 }
 
-/* ── provedor (Groq) ───────────────────────────── */
+/* ── provedor de IA (Groq na nuvem ou Ollama local) ─────────── */
 async function refreshStatus() {
   try {
     const r = await fetch('/api/status', { cache: 'no-store' });
     const s = await r.json();
-    state.provider = { configured: s.groq.configured, model: s.groq.model || 'auto' };
+    // `provider` é o contrato novo; `groq` continua como reserva do HUD
+    const prov = s.provider || {
+      name: 'groq',
+      label: 'Groq',
+      configured: s.groq.configured,
+      model: s.groq.model || 'auto',
+    };
+    state.provider = {
+      name: prov.name || 'groq',
+      label: prov.label || (prov.name === 'ollama' ? 'Ollama' : 'Groq'),
+      configured: !!prov.configured,
+      model: prov.model || 'auto',
+    };
     // motor/voz vêm do config.json: já valem no boot (sem abrir as configurações)
     if (s.tts_engine) settings.ttsEngine = s.tts_engine === 'edge' ? 'edge' : 'piper';
     if (s.tts_voice) {
@@ -1007,16 +1019,16 @@ async function refreshStatus() {
     }
     // painel "Provedor de IA" removido do HUD enxuto: só quem existir é atualizado
     const card = $('#llmGroq');
-    if (card) card.classList.toggle('off', !s.groq.configured);
+    if (card) card.classList.toggle('off', !state.provider.configured);
     const st = $('#llmGroqState');
-    if (st) st.textContent = s.groq.configured ? `Conectado · ${s.groq.model}` : 'Sem chave configurada';
+    if (st) st.textContent = state.provider.configured ? `Conectado · ${state.provider.model}` : 'Sem provedor configurado';
     const chip = $('#llmChip');
-    if (chip) chip.innerHTML = `<span class="dot ${s.groq.configured ? 'green' : 'red'} blink"></span>${s.groq.configured ? 'ATIVO' : 'SEM CHAVE'}`;
+    if (chip) chip.innerHTML = `<span class="dot ${state.provider.configured ? 'green' : 'red'} blink"></span>${state.provider.configured ? 'ATIVO' : 'SEM PROVEDOR'}`;
     const info = $('#llmInfo');
-    if (info) info.textContent = s.groq.configured ? 'Modelo ativo nas respostas do chat.' : 'Configure a chave para conversar (ferramentas já funcionam sem ela).';
-    $('#opProvider').textContent = s.groq.configured ? 'groq' : 'sem provedor';
-    $('#opModel').textContent = s.groq.configured ? s.groq.model : '—';
-    $('#engineLabel').textContent = s.groq.configured ? `groq · ${s.groq.model}` : 'sem provedor de IA';
+    if (info) info.textContent = state.provider.configured ? 'Modelo ativo nas respostas do chat.' : 'Configure a Groq ou o Ollama para conversar (ferramentas já funcionam sem ele).';
+    $('#opProvider').textContent = state.provider.configured ? state.provider.name : 'sem provedor';
+    $('#opModel').textContent = state.provider.configured ? state.provider.model : '—';
+    $('#engineLabel').textContent = state.provider.configured ? `${state.provider.name} · ${state.provider.model}` : 'sem provedor de IA';
     renderCore();
   } catch { /* servidor fora */ }
 }
@@ -1783,7 +1795,7 @@ form.addEventListener('submit', async (e) => {
       } else if (ev === 'tool') {
         const line2 = document.createElement('div');
         line2.className = 'meta';
-        line2.textContent = `⌘ ${d.name} · ${d.ok ? '✓' : '✗'} ${d.summary}`;
+        line2.textContent = `› ${d.name} · ${d.ok ? '✓' : '✗'} ${d.summary}`;
         wrap.insertBefore(line2, bubble);
         wrap.insertBefore(document.createElement('br'), bubble);
         handleToolEvent(d);
@@ -1802,7 +1814,7 @@ form.addEventListener('submit', async (e) => {
   }
 
   if (err && !full) {
-    bubble.textContent = `⚠ ${err}`;
+    bubble.textContent = `! ${err}`;
     meta.textContent = 'JARVIS · erro';
     setCoreMode('error', 2500);   // vermelho por 2,5 s e volta ao ciano
     pushEvent('err', 'Falha na resposta', err.slice(0, 120));
@@ -1814,7 +1826,7 @@ form.addEventListener('submit', async (e) => {
     renderSession();
     if (settings.ttsOn) speak(full);
   } else if (!err) {
-    bubble.textContent = '⚠ Resposta vazia do provedor.';
+    bubble.textContent = '! Resposta vazia do provedor.';
   }
 
   busy = false;
@@ -1887,12 +1899,27 @@ function setEngineUI(eng) {
   }
 }
 
+/* mostra só os campos do provedor escolhido (Groq ↔ Ollama) */
+function setProviderUI(prov) {
+  const p = prov === 'ollama' ? 'ollama' : 'groq';
+  const groq = $('#setGroqFields');
+  const ollama = $('#setOllamaFields');
+  if (groq) groq.hidden = p === 'ollama';
+  if (ollama) ollama.hidden = p !== 'ollama';
+  const msg = $('#ollamaTestMsg');
+  if (msg && p === 'groq') msg.textContent = '';
+}
+
 async function openSettings() {
   try {
     const r = await fetch('/api/config');
     const c = await r.json();
+    $('#setProvider').value = c.provider === 'ollama' ? 'ollama' : 'groq';
     $('#setGroqKey').value = c.groqKey || '';
     $('#setGroqModel').value = c.groqModel || '';
+    $('#setOllamaUrl').value = c.ollamaUrl || 'http://127.0.0.1:11434/v1';
+    $('#setOllamaModel').value = c.ollamaModel || 'llama3';
+    setProviderUI(c.provider);
     if (c.tts_engine) settings.ttsEngine = c.tts_engine === 'edge' ? 'edge' : 'piper';
     if (c.tts_voice) {
       if (settings.ttsEngine === 'edge') settings.voiceEdge = c.tts_voice;
@@ -1969,6 +1996,34 @@ $('#gearBtn').addEventListener('click', openSettings);
 on('#manageProviders', 'click', openSettings);
 $('#navSettings').addEventListener('click', openSettings);
 $('#closeSettings').addEventListener('click', () => (modal.hidden = true));
+on('#setProvider', 'change', (e) => setProviderUI(e.target.value));
+on('#testOllama', 'click', async () => {
+  const out = $('#ollamaTestMsg');
+  const btn = $('#testOllama');
+  if (!out) return;
+  const url = ($('#setOllamaUrl').value || '').trim() || 'http://127.0.0.1:11434/v1';
+  out.textContent = 'Testando conexão…';
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/ollama/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    }).then((x) => x.json());
+    if (r.ok) {
+      const lista = (r.models || []).slice(0, 5).join(', ');
+      out.textContent = lista
+        ? `✓ Conectado. Modelos baixados: ${lista}`
+        : '✓ Conectado, mas nenhum modelo baixado — rode: ollama pull llama3';
+    } else {
+      out.textContent = `× ${r.error || 'não consegui conectar ao Ollama'}`;
+    }
+  } catch (e) {
+    out.textContent = `× não consegui conectar: ${e.message}`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+});
 modal.addEventListener('click', (e) => { if (e.target === modal) modal.hidden = true; });
 $('#setTtsEngine').addEventListener('click', async (e) => {
   const btn = e.target.closest('.seg-btn');
@@ -2008,8 +2063,11 @@ $('#saveSettings').addEventListener('click', async () => {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      provider: $('#setProvider').value === 'ollama' ? 'ollama' : 'groq',
       groqKey: $('#setGroqKey').value.trim(),
       groqModel: $('#setGroqModel').value.trim(),
+      ollamaUrl: $('#setOllamaUrl').value.trim(),
+      ollamaModel: $('#setOllamaModel').value.trim(),
       continuous_listen_minutes: Number(settings.continuousMinutes) || 0,
       tts_engine: settings.ttsEngine,
       tts_voice: settings.voice,
@@ -2017,6 +2075,10 @@ $('#saveSettings').addEventListener('click', async () => {
   }).then((r) => r.json()).catch(() => ({}));
   if (saved.tts_engine) settings.ttsEngine = saved.tts_engine;
   if (saved.tts_voice) settings.voice = saved.tts_voice;
+  if (saved.provider) $('#setProvider').value = saved.provider === 'ollama' ? 'ollama' : 'groq';
+  if (saved.ollamaUrl) $('#setOllamaUrl').value = saved.ollamaUrl;
+  if (saved.ollamaModel !== undefined) $('#setOllamaModel').value = saved.ollamaModel;
+  setProviderUI(saved.provider || $('#setProvider').value);
   saveLocal();
   // cidade do clima: o backend resolve cidade→lat/lon UMA vez (Nominatim) e grava no
   // config.json com permissão 0600 — o /weather nunca consulta o Nominatim.
@@ -2041,7 +2103,7 @@ $('#saveSettings').addEventListener('click', async () => {
   }
   // aplica já o novo tempo (reinicia o timer se a escuta contínua estiver ativa)
   if (continuousListening) resetContinuousTimer();
-  $('#settingsMsg').textContent = `✔ Salvo.${weatherMsg}`;
+  $('#settingsMsg').textContent = `✓ Salvo.${weatherMsg}`;
   const engineLabel = settings.ttsEngine === 'edge' ? 'Edge TTS' : 'Piper';
   pushEvent('ok', 'Configurações salvas', `${engineLabel} · voz ${settings.voice || 'padrão'} · velocidade ${settings.rate}×`);
   await refreshStatus();
@@ -2067,11 +2129,11 @@ $('#downloadVoice').addEventListener('click', async () => {
       body: JSON.stringify({ name: 'pt_BR-faber-medium' }),
     });
     const j = await r.json();
-    msg.textContent = r.ok ? `✔ ${j.name} baixada (${j.size_mb} MB). Selecione e ouça.` : `✖ ${j.error}`;
+    msg.textContent = r.ok ? `✓ ${j.name} baixada (${j.size_mb} MB). Selecione e ouça.` : `× ${j.error}`;
     await loadVoices();
     if (r.ok) pushEvent('ok', 'Nova voz baixada', `${j.name} (${j.size_mb} MB)`);
   } catch (e) {
-    msg.textContent = `✖ ${e.message}`;
+    msg.textContent = `× ${e.message}`;
   }
 });
 
