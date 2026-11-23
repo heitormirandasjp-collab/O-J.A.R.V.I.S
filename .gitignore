@@ -28,4 +28,7 @@ build/
 exec_history.json
 security.log
 _test_real.wav
-config.json
+config.json
+
+# Tokens do Google (OAuth) — nunca commitar
+google_token.json

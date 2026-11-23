@@ -14,6 +14,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import base64
 import html
 import io
 import json
@@ -32,10 +33,11 @@ import uuid
 import wave
 import webbrowser
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import psutil
 import requests
@@ -2572,6 +2574,611 @@ def agenda_check(window: int = Query(5, ge=1, le=1440)):
     return {"window_min": window, "events": soon, "count": len(soon)}
 
 
+# ── 11b. Google: Gmail + Agenda (OAuth 2.0) ─────────────────────────────
+# O JARVIS lê os emails e lê/cria/apaga eventos na agenda do Google do Comandante.
+# Fluxo: o usuário cria um cliente OAuth "Desktop app" no Google Cloud, cola o Client ID e o
+# Client Secret nas configurações, clica em "Conectar Google" — o backend abre um servidor
+# local em 127.0.0.1:8899/google/callback, recebe o código e guarda o refresh token em
+# google_token.json (0600, na pasta de dados do usuário). Nada de SDK: só HTTP no requests.
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+GOOGLE_GMAIL_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
+GOOGLE_CALENDAR_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+# escopos: ler emails e ver/editar a agenda. Nada de enviar email nem apagar a conta.
+GOOGLE_SCOPES = (
+    "openid email profile "
+    "https://www.googleapis.com/auth/gmail.readonly "
+    "https://www.googleapis.com/auth/calendar"
+)
+GOOGLE_REDIRECT_PORT = int(os.environ.get("JARVIS_GOOGLE_PORT", "8899"))
+GOOGLE_TZ_DEFAULT = "America/Sao_Paulo"
+GOOGLE_FLOW_TTL = 300  # segundos esperando a autorização no navegador
+
+
+class GoogleError(Exception):
+    """Erro previsto da integração (vira JSON amigável, nunca 500 cru)."""
+
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
+
+
+def _google_token_file() -> Path:
+    return _data_dir() / "google_token.json"
+
+
+def _google_client() -> dict[str, str]:
+    """Client ID/Secret do cliente OAuth do Google (config.json, gravado pelo app.py)."""
+    cfg = _read_config()
+    cid = str(cfg.get("googleClientId") or "").strip()
+    secret = str(cfg.get("googleClientSecret") or "").strip()
+    if not cid or not secret:
+        raise GoogleError(
+            "Google não configurado: informe o Client ID e o Client Secret nas "
+            "configurações (engrenagem → Google).",
+            400,
+        )
+    return {"client_id": cid, "client_secret": secret}
+
+
+def _google_tz() -> str:
+    cfg = _read_config()
+    return str(cfg.get("googleTimezone") or GOOGLE_TZ_DEFAULT).strip()[:64] or GOOGLE_TZ_DEFAULT
+
+
+def _read_google_token() -> dict[str, Any]:
+    try:
+        data = json.loads(_google_token_file().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _write_google_token(tok: dict[str, Any]) -> None:
+    path = _google_token_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(tok, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _google_access_token() -> str:
+    """Access token válido (renova com o refresh token quando expira)."""
+    tok = _read_google_token()
+    access = str(tok.get("access_token") or "")
+    expires_at = float(tok.get("expires_at") or 0)
+    if access and expires_at - 60 > time.time():
+        return access
+    refresh = str(tok.get("refresh_token") or "")
+    if not refresh:
+        raise GoogleError(
+            "Google não conectado (ou sessão expirada). Conecte em Configurações → Google.",
+            409,
+        )
+    creds = _google_client()
+    try:
+        r = requests.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh,
+                "client_id": creds["client_id"],
+                "client_secret": creds["client_secret"],
+            },
+            timeout=30,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise GoogleError(f"falha de rede ao renovar o acesso ao Google ({type(exc).__name__})", 502) from exc
+    data = r.json() if r.content else {}
+    if r.status_code != 200 or not data.get("access_token"):
+        raise GoogleError(
+            "o Google recusou a renovação do acesso "
+            f"({data.get('error') or r.status_code}) — conecte de novo em Configurações → Google.",
+            409,
+        )
+    tok.update(
+        {
+            "access_token": data["access_token"],
+            "expires_at": time.time() + float(data.get("expires_in") or 3600),
+        }
+    )
+    _write_google_token(tok)
+    return str(tok["access_token"])
+
+
+def _google_api(
+    method: str,
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+    timeout: float = 30,
+) -> dict[str, Any]:
+    token = _google_access_token()
+    try:
+        r = requests.request(
+            method,
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+            json=body,
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise GoogleError(f"falha de rede com o Google ({type(exc).__name__})", 502) from exc
+    if r.status_code == 401:
+        raise GoogleError("o Google recusou o token — conecte de novo em Configurações → Google.", 409)
+    if r.status_code == 204 or not r.content:
+        return {}
+    try:
+        data = r.json()
+    except Exception:  # noqa: BLE001
+        data = {}
+    if r.status_code >= 400:
+        detail = ""
+        if isinstance(data, dict):
+            err = data.get("error")
+            detail = str(err.get("message") if isinstance(err, dict) else err or "")
+        raise GoogleError(
+            f"o Google respondeu HTTP {r.status_code}" + (f": {detail[:200]}" if detail else ""),
+            502,
+        )
+    return data if isinstance(data, dict) else {}
+
+
+# ── fluxo OAuth: servidor local que recebe o redirect ───────────────────
+_GOOGLE_FLOW: dict[str, Any] = {"state": "", "status": "idle", "error": "", "code": "", "server": None}
+_GOOGLE_FLOW_LOCK = threading.Lock()
+
+
+def _google_redirect_uri(port: int) -> str:
+    return f"http://127.0.0.1:{int(port)}/google/callback"
+
+
+class _GoogleCallbackHandler(BaseHTTPRequestHandler):
+    """Recebe ?code=<...>&state=<...> do Google e mostra uma página para fechar a aba."""
+
+    def do_GET(self):  # noqa: N802 (nome exigido pelo BaseHTTPRequestHandler)
+        parsed = urlparse(self.path)
+        if parsed.path != "/google/callback":
+            self.send_response(404)
+            self.end_headers()
+            return
+        q = parse_qs(parsed.query)
+        code = (q.get("code") or [""])[0]
+        state = (q.get("state") or [""])[0]
+        error = (q.get("error") or [""])[0]
+        with _GOOGLE_FLOW_LOCK:
+            ok = bool(code) and not error and state == _GOOGLE_FLOW.get("state")
+            if ok:
+                _GOOGLE_FLOW["code"] = code
+                _GOOGLE_FLOW["status"] = "exchanging"
+            else:
+                _GOOGLE_FLOW["status"] = "error"
+                _GOOGLE_FLOW["error"] = error or (
+                    "state inválido — tente conectar de novo" if code else "o Google não devolveu o código de autorização"
+                )
+        titulo = "JARVIS conectado ao Google" if ok else "Não consegui conectar ao Google"
+        detalhe = (
+            "Pode fechar esta aba e voltar ao JARVIS."
+            if ok
+            else "Volte ao JARVIS e tente novamente."
+        )
+        body = (
+            "<!doctype html><html lang=pt-BR><meta charset=utf-8>"
+            f"<title>{titulo}</title>"
+            '<body style="margin:0;height:100vh;display:grid;place-items:center;background:#08090b;'
+            'color:#dbe7f3;font-family:Segoe UI,system-ui,sans-serif"><div style="text-align:center">'
+            f'<h1 style="color:#3fd0ff;font-weight:500;margin:0 0 10px">{titulo}</h1>'
+            f'<p style="opacity:.75;margin:0">{detalhe}</p></div></body></html>'
+        ).encode("utf-8")
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def log_message(self, *args):  # silencia o log padrão do http.server
+        return
+
+
+def _google_exchange(code: str, redirect_uri: str) -> dict[str, Any]:
+    """Troca o código de autorização pelos tokens e grava (com o email da conta)."""
+    creds = _google_client()
+    try:
+        r = requests.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": creds["client_id"],
+                "client_secret": creds["client_secret"],
+                "redirect_uri": redirect_uri,
+            },
+            timeout=30,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise GoogleError(f"falha de rede ao falar com o Google ({type(exc).__name__})", 502) from exc
+    data = r.json() if r.content else {}
+    if r.status_code != 200 or not data.get("access_token"):
+        raise GoogleError(
+            "o Google recusou a troca do código "
+            f"({data.get('error') or r.status_code}) — confira o Client ID/Secret e tente de novo.",
+            400,
+        )
+    tok: dict[str, Any] = {
+        "access_token": data["access_token"],
+        "refresh_token": data.get("refresh_token") or "",
+        "expires_at": time.time() + float(data.get("expires_in") or 3600),
+        "scope": data.get("scope") or "",
+        "token_type": data.get("token_type") or "Bearer",
+        "connected_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    try:
+        info = requests.get(
+            GOOGLE_USERINFO_URL,
+            headers={"Authorization": f"Bearer {tok['access_token']}"},
+            timeout=15,
+        ).json()
+        tok["email"] = str(info.get("email") or "")
+        tok["name"] = str(info.get("name") or "")
+    except Exception:  # noqa: BLE001
+        pass
+    if not tok.get("refresh_token"):
+        # mantém um refresh token anterior (o Google só manda um na primeira autorização)
+        old = _read_google_token()
+        if old.get("refresh_token"):
+            tok["refresh_token"] = old["refresh_token"]
+    _write_google_token(tok)
+    _security_log("google", f"conta conectada: {tok.get('email') or 'desconhecida'}")
+    return tok
+
+
+def _google_finish_flow(server: HTTPServer) -> None:
+    """Espera o código (até 5 min), troca pelos tokens e fecha o servidor local."""
+    deadline = time.time() + GOOGLE_FLOW_TTL
+    code = ""
+    redirect_uri = ""
+    while time.time() < deadline:
+        with _GOOGLE_FLOW_LOCK:
+            code = str(_GOOGLE_FLOW.get("code") or "")
+            redirect_uri = str(_GOOGLE_FLOW.get("redirect_uri") or "")
+            status = str(_GOOGLE_FLOW.get("status") or "")
+        if code or status == "error":
+            break
+        time.sleep(0.4)
+    try:
+        server.shutdown()
+        server.server_close()
+    except Exception:  # noqa: BLE001
+        pass
+    with _GOOGLE_FLOW_LOCK:
+        _GOOGLE_FLOW["server"] = None
+        if not code:
+            if _GOOGLE_FLOW.get("status") != "error":
+                _GOOGLE_FLOW["status"] = "error"
+                _GOOGLE_FLOW["error"] = "tempo esgotado (5 min) esperando a autorização do Google"
+            _GOOGLE_FLOW["code"] = ""
+            return
+    try:
+        tok = _google_exchange(code, redirect_uri)
+    except GoogleError as exc:
+        with _GOOGLE_FLOW_LOCK:
+            _GOOGLE_FLOW["status"] = "error"
+            _GOOGLE_FLOW["error"] = str(exc)
+            _GOOGLE_FLOW["code"] = ""
+        return
+    with _GOOGLE_FLOW_LOCK:
+        _GOOGLE_FLOW["status"] = "connected"
+        _GOOGLE_FLOW["error"] = ""
+        _GOOGLE_FLOW["code"] = ""
+        _GOOGLE_FLOW["email"] = tok.get("email", "")
+
+
+def _google_start_flow(port: int) -> dict[str, Any]:
+    creds = _google_client()  # levanta GoogleError se o Client ID/Secret estiverem vazios
+    with _GOOGLE_FLOW_LOCK:
+        old = _GOOGLE_FLOW.get("server")
+        if old is not None:
+            try:
+                old.shutdown()
+                old.server_close()
+            except Exception:  # noqa: BLE001
+                pass
+            _GOOGLE_FLOW["server"] = None
+        state = secrets.token_urlsafe(18)
+        redirect_uri = _google_redirect_uri(port)
+        try:
+            server = HTTPServer(("127.0.0.1", int(port)), _GoogleCallbackHandler)
+        except OSError as exc:
+            raise GoogleError(
+                f"não consegui abrir a porta {port} para receber a autorização ({exc}). "
+                "Feche o programa que a estiver usando ou troque a porta em Configurações → Google.",
+                409,
+            ) from exc
+        _GOOGLE_FLOW.update(
+            {
+                "state": state,
+                "status": "waiting",
+                "error": "",
+                "code": "",
+                "server": server,
+                "redirect_uri": redirect_uri,
+                "at": time.time(),
+            }
+        )
+    threading.Thread(target=server.serve_forever, name="jarvis-google-oauth", daemon=True).start()
+    threading.Thread(
+        target=_google_finish_flow, args=(server,), name="jarvis-google-exchange", daemon=True
+    ).start()
+    query = {
+        "client_id": creds["client_id"],
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": GOOGLE_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+        "state": state,
+    }
+    _security_log("google", f"autorização iniciada (redirect {redirect_uri})")
+    return {"ok": True, "url": GOOGLE_AUTH_URL + "?" + urlencode(query), "redirect_uri": redirect_uri, "port": port}
+
+
+@app.get("/google/status")
+def google_status():
+    """Estado da conexão (nunca devolve token). A UI usa para o botão Conectar."""
+    cfg = _read_config()
+    tok = _read_google_token()
+    with _GOOGLE_FLOW_LOCK:
+        flow = {
+            "status": _GOOGLE_FLOW.get("status") or "idle",
+            "error": _GOOGLE_FLOW.get("error") or "",
+            "redirect_uri": _GOOGLE_FLOW.get("redirect_uri") or "",
+        }
+    has_client = bool(str(cfg.get("googleClientId") or "").strip())
+    has_secret = bool(str(cfg.get("googleClientSecret") or "").strip())
+    return {
+        "ok": True,
+        "configured": has_client and has_secret,
+        "has_client_id": has_client,
+        "has_client_secret": has_secret,
+        "connected": bool(tok.get("refresh_token") or tok.get("access_token")),
+        "email": tok.get("email") or "",
+        "name": tok.get("name") or "",
+        "scope": tok.get("scope") or "",
+        "timezone": _google_tz(),
+        "flow": flow,
+    }
+
+
+@app.post("/google/connect")
+def google_connect(port: int = Query(0, ge=0, le=65535)):
+    """Inicia o OAuth: prepara o servidor local e devolve a URL de autorização do Google."""
+    try:
+        return _google_start_flow(port or GOOGLE_REDIRECT_PORT)
+    except GoogleError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=exc.status)
+
+
+@app.post("/google/disconnect")
+def google_disconnect():
+    try:
+        _google_token_file().unlink(missing_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": f"não consegui remover o token: {exc}"}, status_code=500)
+    with _GOOGLE_FLOW_LOCK:
+        _GOOGLE_FLOW["status"] = "idle"
+        _GOOGLE_FLOW["error"] = ""
+    _security_log("google", "conta desconectada pelo usuário")
+    return {"ok": True, "connected": False}
+
+
+# ── Gmail (somente leitura) ─────────────────────────────────────────────
+def _gmail_message_summary(msg: dict[str, Any]) -> dict[str, Any]:
+    payload = msg.get("payload") or {}
+    heads: dict[str, str] = {}
+    for item in payload.get("headers") or []:
+        name = str(item.get("name") or "").strip().lower()
+        if name in ("from", "to", "subject", "date"):
+            heads[name] = str(item.get("value") or "")[:300]
+    labels = [str(x) for x in msg.get("labelIds") or []]
+    return {
+        "id": msg.get("id"),
+        "thread_id": msg.get("threadId"),
+        "from": heads.get("from", ""),
+        "to": heads.get("to", ""),
+        "subject": heads.get("subject", "(sem assunto)"),
+        "date": heads.get("date", ""),
+        "snippet": re.sub(r"\s+", " ", str(msg.get("snippet") or "")).strip()[:240],
+        "unread": "UNREAD" in labels,
+        "important": "IMPORTANT" in labels or "STARRED" in labels,
+    }
+
+
+@app.get("/gmail/messages")
+def gmail_messages(q: str = Query("is:unread"), max_results: int = Query(8, ge=1, le=25)):
+    """Lista emails (busca do próprio Gmail: is:unread, is:important, from:..., etc.)."""
+    query = (q or "is:unread").strip()[:200]
+    try:
+        data = _google_api(
+            "GET", f"{GOOGLE_GMAIL_URL}/messages", params={"q": query, "maxResults": max_results}
+        )
+        out: list[dict[str, Any]] = []
+        for item in (data.get("messages") or [])[:max_results]:
+            mid = str(item.get("id") or "")
+            if not mid:
+                continue
+            full = _google_api(
+                "GET",
+                f"{GOOGLE_GMAIL_URL}/messages/{mid}",
+                params={"format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]},
+            )
+            out.append(_gmail_message_summary(full))
+    except GoogleError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=exc.status)
+    return {"ok": True, "query": query, "count": len(out), "messages": out}
+
+
+def _gmail_collect_bodies(
+    payload: dict[str, Any], plain: list[str], rich: list[str]
+) -> None:
+    if not isinstance(payload, dict):
+        return
+    mime = str(payload.get("mimeType") or "")
+    raw = str((payload.get("body") or {}).get("data") or "")
+    if raw and mime in ("text/plain", "text/html"):
+        try:
+            decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8", errors="ignore")
+        except Exception:  # noqa: BLE001
+            decoded = ""
+        if decoded.strip():
+            (plain if mime == "text/plain" else rich).append(decoded)
+    for part in payload.get("parts") or []:
+        _gmail_collect_bodies(part, plain, rich)
+
+
+def _gmail_body_text(payload: dict[str, Any]) -> str:
+    plain: list[str] = []
+    rich: list[str] = []
+    _gmail_collect_bodies(payload, plain, rich)
+    if plain:
+        return "\n".join(plain)
+    text = "\n".join(rich)
+    if text:
+        text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
+        text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+        text = re.sub(r"(?i)</(p|div|li|tr|h[1-6])>", "\n", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = html.unescape(text)
+    return text
+
+
+@app.get("/gmail/message/{message_id}")
+def gmail_message(message_id: str):
+    mid = re.sub(r"[^0-9A-Za-z_-]", "", str(message_id or ""))[:64]
+    if not mid:
+        return JSONResponse({"ok": False, "error": "id de email inválido"}, status_code=400)
+    try:
+        msg = _google_api("GET", f"{GOOGLE_GMAIL_URL}/messages/{mid}", params={"format": "full"})
+    except GoogleError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=exc.status)
+    body = _gmail_body_text(msg.get("payload") or {})
+    body = re.sub(r"\r", "", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()[:4000]
+    return {"ok": True, **_gmail_message_summary(msg), "body": body}
+
+
+# ── Google Agenda ───────────────────────────────────────────────────────
+def _gcal_event_summary(ev: dict[str, Any]) -> dict[str, Any]:
+    start = ev.get("start") or {}
+    end = ev.get("end") or {}
+    return {
+        "id": ev.get("id"),
+        "summary": str(ev.get("summary") or "(sem título)")[:200],
+        "start": start.get("dateTime") or start.get("date") or "",
+        "end": end.get("dateTime") or end.get("date") or "",
+        "location": str(ev.get("location") or "")[:200],
+        "description": str(ev.get("description") or "")[:400],
+        "html_link": ev.get("htmlLink") or "",
+        "status": ev.get("status") or "",
+    }
+
+
+@app.get("/calendar/events")
+def calendar_events(
+    days: int = Query(7, ge=1, le=90),
+    max_results: int = Query(10, ge=1, le=50),
+    q: str = Query(""),
+):
+    now = datetime.now().astimezone().replace(microsecond=0)
+    params: dict[str, Any] = {
+        "timeMin": now.isoformat(),
+        "timeMax": (now + timedelta(days=days)).isoformat(),
+        "singleEvents": "true",
+        "orderBy": "startTime",
+        "maxResults": max_results,
+    }
+    if (q or "").strip():
+        params["q"] = q.strip()[:100]
+    try:
+        data = _google_api("GET", GOOGLE_CALENDAR_URL, params=params)
+    except GoogleError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=exc.status)
+    events = [_gcal_event_summary(e) for e in (data.get("items") or [])]
+    return {
+        "ok": True,
+        "count": len(events),
+        "events": events,
+        "timezone": _google_tz(),
+        "now": now.strftime("%Y-%m-%d %H:%M"),
+    }
+
+
+class CalendarEventIn(BaseModel):
+    summary: str
+    start: str
+    end: str = ""
+    duration_min: int = 60
+    description: str = ""
+    location: str = ""
+
+
+@app.post("/calendar/events")
+def calendar_create(body: CalendarEventIn):
+    title = (body.summary or "").strip()[:200]
+    if not title:
+        return JSONResponse({"ok": False, "error": "informe o título do evento"}, status_code=400)
+    start = _parse_dt(body.start)
+    if start is None:
+        return JSONResponse(
+            {"ok": False, "error": f"data/hora inválida: {body.start!r} (use AAAA-MM-DD HH:MM ou DD/MM/AAAA HH:MM)"},
+            status_code=400,
+        )
+    end = _parse_dt(body.end) if (body.end or "").strip() else None
+    if end is None:
+        minutes = max(5, min(int(body.duration_min or 60), 1440))
+        end = start + timedelta(minutes=minutes)
+    if end <= start:
+        end = start + timedelta(minutes=60)
+    tz = _google_tz()
+    payload = {
+        "summary": title,
+        "description": (body.description or "")[:2000],
+        "location": (body.location or "")[:300],
+        "start": {"dateTime": start.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": tz},
+        "end": {"dateTime": end.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": tz},
+    }
+    try:
+        data = _google_api("POST", GOOGLE_CALENDAR_URL, body=payload)
+    except GoogleError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=exc.status)
+    event = _gcal_event_summary(data)
+    _security_log("agenda-google", f"evento criado: {title} ({event['start']})")
+    return {"ok": True, "event": event}
+
+
+@app.delete("/calendar/events/{event_id}")
+def calendar_delete(event_id: str):
+    eid = re.sub(r"[^0-9A-Za-z_-]", "", str(event_id or ""))[:128]
+    if not eid:
+        return JSONResponse({"ok": False, "error": "id de evento inválido"}, status_code=400)
+    try:
+        _google_api("DELETE", f"{GOOGLE_CALENDAR_URL}/{quote(eid, safe='')}")
+    except GoogleError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=exc.status)
+    _security_log("agenda-google", f"evento removido: {eid}")
+    return {"ok": True, "removed": eid}
+
+
 # ── 12. /health ─────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
@@ -2585,6 +3192,7 @@ def health():
         "tts_engines": ["piper", "edge"],
         "edge_voices": [v["name"] for v in (_edge_voices_cache or EDGE_FALLBACK_VOICES)],
         "agenda_events": len(_load_agenda()),
+        "google_connected": bool(_read_google_token().get("refresh_token") or _read_google_token().get("access_token")),
         "python": sys.version.split()[0],
         "hostname": socket.gethostname(),
         "uptime_hours": round((time.time() - psutil.boot_time()) / 3600, 1),

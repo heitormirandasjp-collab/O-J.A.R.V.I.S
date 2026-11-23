@@ -98,6 +98,10 @@ Tudo fica em **`config.json`**, na raiz do projeto (no `.exe`, em
 | `ollamaModel` | modelo local (nome exato do `ollama list`) | `llama3` |
 | `tts_engine` | motor de voz: `piper` ou `edge` | `piper` |
 | `tts_voice` | voz: arquivo `.onnx` (Piper) ou ShortName (Edge) | `pt_BR-cadu-medium.onnx` |
+| `googleClientId` | Client ID do cliente OAuth **Desktop app** do Google (Gmail + Agenda) | vazio = Google desligado |
+| `googleClientSecret` | Client Secret do mesmo cliente OAuth — **segredo**, nunca vai para o HUD mascarado | vazio |
+| `googleTimezone` | fuso usado ao criar eventos na Google Agenda | `America/Sao_Paulo` |
+| `googleRedirectPort` | porta local que recebe o retorno da autorização do Google | `8899` |
 | `continuous_listen_minutes` | minutos de escuta contínua após o wake word (`0` = infinito) | `5` |
 | `weather_city` | cidade do clima (⚙ → *Cidade do clima*) | vazio = detecta por IP |
 | `weather_lat` · `weather_lon` | coordenadas resolvidas **uma vez** ao salvar a cidade (geocoding do open-meteo) | vazio = detecta por IP |
@@ -204,7 +208,8 @@ jarvis/
 │   └── icon.png           # ícone do JARVIS
 ├── voices/                # vozes baixadas (faber/cadu, 60 MB cada)
 ├── config.json            # chave da Groq (só neste computador)
-└── agenda.json            # lembretes/agenda (criado no primeiro uso)
+├── agenda.json            # lembretes/agenda (criado no primeiro uso)
+└── google_token.json      # tokens do Google (0600; criado ao conectar — nunca commitar)
 ```
 
 No `.exe`, `config.json` e `agenda.json` ficam em `%APPDATA%\JARVIS\`.
@@ -414,9 +419,10 @@ NÃO invente nada.`
 
 O chat **não depende mais de regex** quando há chave da Groq. O fluxo do `/api/chat` é:
 
-1. o modelo recebe a mensagem **mais a lista de 14 ferramentas** (`exec`, `read_file`,
+1. o modelo recebe a mensagem **mais a lista de 19 ferramentas** (`exec`, `read_file`,
    `sysinfo`, `list_processes`, `kill`, `power`, `power_cancel`, `news`, `agenda_add`,
-   `agenda_list`, `agenda_delete`, `agenda_check`, `stocks`, `currencies`);
+   `agenda_list`, `agenda_delete`, `agenda_check`, `stocks`, `currencies`, `weather` e as do
+   Google: `gmail_list`, `gmail_read`, `calendar_list`, `calendar_add`, `calendar_delete`);
 2. ele decide se precisa de alguma ferramenta (pode pedir várias de uma vez);
 3. o backend executa cada uma e devolve o resultado real;
 4. repete até o modelo responder — **máximo de 5 rodadas**;
@@ -643,6 +649,14 @@ Quando o Comandante pede notícias, o JARVIS **não lê os títulos crus** — e
 | `GET /memory/stats` | total, arquivadas, categorias, datas e embedder |
 | `GET /voices` · `POST /voices/download` | vozes locais (Piper) e download |
 | `GET /voices-edge` | vozes pt-BR do Edge TTS (com a lista local de reserva) |
+| `GET /google/status` | estado da conexão Google (conectado, email, escopos, etapa do OAuth) |
+| `POST /google/connect?port=8899` | abre o servidor local do OAuth e devolve a URL de autorização |
+| `POST /google/disconnect` | apaga o `google_token.json` (desconecta a conta) |
+| `GET /gmail/messages?q=is:unread&max_results=8` | lista emails (busca do Gmail: `is:important`, `from:…`, `newer_than:2d`) |
+| `GET /gmail/message/{id}` | corpo de um email em texto puro |
+| `GET /calendar/events?days=7&max_results=10&q=` | eventos da **Google Agenda** na janela pedida |
+| `POST /calendar/events` | `{ "summary", "start", "end"\|"duration_min", "description", "location" }` |
+| `DELETE /calendar/events/{id}` | remove um evento da Google Agenda |
 | `GET /health` | status do backend, do Piper, do Edge TTS e nº de eventos da agenda |
 
 ### Energia (desligar / reiniciar / hibernar / suspender)
@@ -1113,6 +1127,112 @@ e tudo passa por validação no backend. Resumo do que foi endurecido:
 
 Detalhes completos, exemplos de log e as variáveis de ambiente para estender as proteções
 estão em **[SECURITY.md](SECURITY.md)**.
+
+## Google — Gmail e Google Agenda (v1.0.22)
+
+O JARVIS agora **lê os seus emails** e **mexe na sua agenda de verdade**. Você fala, ele
+consulta e age:
+
+```
+“Jarvis, quais são os meus emails?”          → lê os não lidos e resume só os importantes
+“Jarvis, tem algo importante no meu email?”  → busca is:important e destaca o que exige ação
+“Jarvis, lê o email do banco”                → abre o email e resume
+“Jarvis, o que eu tenho na agenda amanhã?”   → lista os eventos da Google Agenda
+“Jarvis, põe na minha agenda uma reunião    → cria o evento (calendar_add) e confirma
+ dia 12 às 15h com o financeiro”
+“Jarvis, cancela a reunião de sexta”         → localiza o id e apaga o evento
+```
+
+São **cinco ferramentas novas** no agente: `gmail_list`, `gmail_read`, `calendar_list`,
+`calendar_add` e `calendar_delete`. O modelo só responde depois do resultado real da
+ferramenta; sem resultado, ele diz “Não há nada, Comandante” (mesma regra anti-alucinação das
+outras ferramentas). Os **lembretes locais** (`agenda*.json`) continuam separados — a Google
+Agenda é a agenda da conta Google.
+
+### Como conectar (uma vez)
+
+1. entre em <https://console.cloud.google.com/> e crie (ou escolha) um projeto;
+2. **APIs e serviços → Biblioteca**: ative **Gmail API** e **Google Calendar API**;
+3. **APIs e serviços → Tela de consentimento OAuth**: tipo **Externo**, preencha nome/email e,
+   em **Usuários de teste**, adicione o seu próprio email (o app fica em modo de teste — sem
+   verificação do Google);
+4. **APIs e serviços → Credenciais → Criar credenciais → ID do cliente OAuth** → tipo
+   **App para computador (Desktop app)**;
+5. copie o **Client ID** e o **Client Secret**, abra o JARVIS → **engrenagem ⚙ → Google**, cole
+   nos dois campos e clique em **Conectar Google**;
+6. o navegador abre a autorização do Google; autorize e a aba mostra
+   “JARVIS conectado ao Google”. O status na engrenagem passa a `conectado · seu@email.com`.
+
+O **redirect** `http://127.0.0.1:8899/google/callback` já está embutido — clientes do tipo
+*Desktop app* aceitam loopback com qualquer porta, então não precisa cadastrar URI nenhuma.
+Se a porta 8899 estiver ocupada, troque em `config.json` (**`googleRedirectPort`**).
+
+### Escopos e segurança
+
+| Escopo | Para quê |
+|---|---|
+| `gmail.readonly` | **só ler** emails — o JARVIS não envia, não apaga e não marca como lido |
+| `calendar` | ler, criar e apagar eventos na agenda |
+| `openid email profile` | mostrar qual conta está conectada |
+
+- O **refresh token** fica em `google_token.json` na pasta de dados (`%APPDATA%\JARVIS\` no
+  `.exe`), com permissão **0600**, e é **excluído do build** (`JARVIS.spec` filtra o arquivo).
+  Ele **nunca** é devolvido para a interface: `GET /google/status` responde apenas
+  conectado/email/escopos;
+- o **Client Secret** é gravado no `config.json` com 0600, aparece **mascarado** em
+  `GET /api/config/masked` e um placeholder mascarado nunca sobrescreve o valor real;
+- **Desconectar** apaga o token na hora (`POST /google/disconnect`); para revogar o acesso de
+  vez, remova o app em <https://myaccount.google.com/permissions>;
+- as chamadas ao Google saem do backend local (`127.0.0.1:8000`) direto para
+  `googleapis.com` por HTTPS — nenhum intermediário. O `security.log` registra
+  `google: conta conectada`, `agenda-google: evento criado/removido` e desconexões.
+
+### Detalhes técnicos
+
+- **OAuth 2.0 escrito à mão** (sem SDK): `POST /google/connect` gera `state`, sobe um
+  `HTTPServer` local em `127.0.0.1:8899`, devolve a URL de consentimento e espera até **5 min**;
+  `_GoogleCallbackHandler` valida o `state`, mostra uma página “JARVIS conectado” e o código é
+  trocado por tokens em `oauth2.googleapis.com/token` (`access_type=offline` + `prompt=consent`
+  para receber o refresh token);
+- **renovação automática**: `_google_access_token()` renova com o refresh token quando faltam
+  menos de 60 s para expirar e regrava o arquivo — se o Google recusar, a resposta é **409** com
+  “conecte de novo em Configurações → Google”;
+- **Gmail**: `messages.list` + `messages.get(format=metadata)` para a lista (remetente, assunto,
+  data, snippet, `unread`/`important`) e `format=full` para ler, escolhendo `text/plain` e caindo
+  para o HTML convertido em texto;
+- **Agenda**: `events.list` com `singleEvents=true&orderBy=startTime` na janela pedida e
+  `events.insert`/`events.delete` no calendário `primary`. Datas aceitam `AAAA-MM-DD HH:MM`,
+  `DD/MM/AAAA HH:MM` e `DD/MM HH:MM` (o mesmo `_parse_dt` da agenda local) e o evento sai com
+  `timeZone` de `googleTimezone`; sem `end`, a duração padrão é **60 min**;
+- **sem conexão, nada quebra**: as rotas respondem **409** com uma frase clara, o chat continua
+  com as ferramentas locais e o `GET /health` informa `google_connected: false`.
+
+Testado localmente (backend em 8011-8013): `/google/status`, `/google/connect` sem credenciais
+(**400**), com credenciais falsas (URL gerada e listener em 8899 respondendo **200**), callback com
+`state` errado, `/gmail/messages` e `/calendar/events` sem conexão (**409**), `masked` preservando
+o Client Secret e `POST /google/disconnect`. **Não** foi possível validar a leitura real de emails
+nem a criação de eventos sem uma conta Google autorizada — o fluxo completo depende do passo
+“Conectar Google” com credenciais reais.
+
+## Mudanças recentes (v1.0.22)
+
+**Integração Google: Gmail + Google Agenda por voz.**
+
+1. **Cinco ferramentas novas no agente** — `gmail_list`, `gmail_read`, `calendar_list`,
+   `calendar_add`, `calendar_delete` (`TOOLS_SCHEMA`/`TOOL_ALIASES`/`run_tool` no `app.py`, rotas
+   `/gmail/*` e `/calendar/*` no `backend/main.py`). O prompt de personalidade ganhou a seção
+   **GMAIL E GOOGLE AGENDA**: ler antes de falar, resumir só o que importa, conferir o horário
+   antes de criar e nunca inventar email/evento.
+2. **OAuth 2.0 completo sem SDK** — `POST /google/connect` + `GET /google/status` +
+   `POST /google/disconnect`, com servidor local em `127.0.0.1:8899`, validação de `state`,
+   refresh automático e token em `google_token.json` (**0600**, fora do build).
+3. **Configurações** — bloco **Google** na engrenagem: status ao vivo
+   (`conectado · email`), Client ID/Secret, **Conectar** (abre a autorização e acompanha o
+   resultado) e **Desconectar**. As chaves `googleClientId`, `googleClientSecret`,
+   `googleTimezone` e `googleRedirectPort` entraram no `load_config`/`POST /api/config` — sem
+   isso, salvar as configurações apagaria as credenciais já cadastradas.
+4. **Privacidade** — escopo de leitura no Gmail (`gmail.readonly`, sem envio/exclusão), Client
+   Secret mascarado em `/api/config/masked` e nenhum token devolvido ao HUD.
 
 ## Mudanças recentes (v1.0.21)
 

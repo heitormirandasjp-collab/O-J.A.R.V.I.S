@@ -2348,6 +2348,14 @@ async function openSettings() {
   if (cont) cont.value = String(Number(settings.continuousMinutes) || 0);
   setEngineUI(ttsEngine());
   await loadVoices(ttsEngine());
+  // Google (Gmail + Agenda): Client ID vem do config.json; o Secret fica em branco
+  // (o placeholder avisa que o valor salvo é mantido) e o estado vem do backend.
+  const gidEl = $('#setGoogleId');
+  if (gidEl) gidEl.value = c.googleClientId || '';
+  const gsecEl = $('#setGoogleSecret');
+  if (gsecEl) gsecEl.value = '';
+  if (c.googleRedirectPort) googlePort = Number(c.googleRedirectPort) || 8899;
+  await refreshGoogleStatus();
   $('#settingsMsg').textContent = '';
   modal.hidden = false;
 }
@@ -2390,6 +2398,100 @@ async function loadVoices(engine) {
   if (!sel.value && sel.options.length) sel.selectedIndex = 0;
   settings.voice = sel.value;
 }
+
+/* ── Google: Gmail + Agenda ───────────────────── */
+let googlePort = 8899;
+let googlePoll = null;
+
+async function refreshGoogleStatus() {
+  const state = $('#gState');
+  if (!state) return null;
+  try {
+    const s = await fetch(`${BACKEND_URL}/google/status`, { cache: 'no-store' }).then((r) => r.json());
+    const dot = $('#gDot');
+    let label = 'não conectado';
+    if (s.connected) label = `conectado${s.email ? ` · ${s.email}` : ''}`;
+    else if (!s.configured) label = 'falta o Client ID/Secret';
+    else if (s.flow && s.flow.status === 'waiting') label = 'aguardando autorização no navegador…';
+    else if (s.flow && s.flow.status === 'exchanging') label = 'finalizando a conexão…';
+    state.textContent = label;
+    if (dot) {
+      dot.classList.toggle('ok', !!s.connected);
+      dot.classList.toggle('warn', !s.connected && !!s.configured);
+    }
+    const btn = $('#googleConnect');
+    if (btn) btn.textContent = s.connected ? 'Reconectar' : 'Conectar Google';
+    const sec = $('#setGoogleSecret');
+    if (sec) sec.placeholder = s.has_client_secret ? 'já salvo — deixe em branco para manter' : 'cole o Client Secret';
+    if (s.flow && s.flow.status === 'error' && s.flow.error) $('#googleMsg').textContent = `× ${s.flow.error}`;
+    return s;
+  } catch {
+    state.textContent = 'backend fora do ar';
+    return null;
+  }
+}
+
+on('#googleConnect', 'click', async () => {
+  const msg = $('#googleMsg');
+  const cid = ($('#setGoogleId').value || '').trim();
+  const csecret = ($('#setGoogleSecret').value || '').trim();
+  if (!cid) {
+    msg.textContent = 'Informe o Google Client ID (veja o README → Google).';
+    return;
+  }
+  const before = await refreshGoogleStatus();
+  if (csecret) {
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ googleClientId: cid, googleClientSecret: csecret, googleRedirectPort: googlePort }),
+    }).catch(() => {});
+    $('#setGoogleSecret').value = '';
+  } else if (before && before.configured) {
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ googleClientId: cid, googleRedirectPort: googlePort }),
+    }).catch(() => {});
+  } else {
+    msg.textContent = 'Informe também o Google Client Secret.';
+    return;
+  }
+  msg.textContent = 'Abrindo a autorização do Google…';
+  const r = await fetch(`${BACKEND_URL}/google/connect?port=${googlePort}`, { method: 'POST' })
+    .then((x) => x.json())
+    .catch((e) => ({ ok: false, error: e.message }));
+  if (!r.ok) {
+    msg.textContent = `× ${r.error || 'não consegui iniciar a conexão'}`;
+    return;
+  }
+  msg.textContent = 'Autorize na aba que abriu (você tem 5 minutos).';
+  window.open(r.url, '_blank', 'noopener');
+  const started = Date.now();
+  if (googlePoll) clearInterval(googlePoll);
+  googlePoll = setInterval(async () => {
+    const s = await refreshGoogleStatus();
+    if (s && s.connected) {
+      clearInterval(googlePoll);
+      googlePoll = null;
+      msg.textContent = `✓ Conectado${s.email ? ` como ${s.email}` : ''}.`;
+      pushEvent('ok', 'Google conectado', s.email || '');
+    } else if ((s && s.flow && s.flow.status === 'error') || Date.now() - started > 310000) {
+      clearInterval(googlePoll);
+      googlePoll = null;
+    }
+  }, 2500);
+});
+
+on('#googleDisconnect', 'click', async () => {
+  const msg = $('#googleMsg');
+  const r = await fetch(`${BACKEND_URL}/google/disconnect`, { method: 'POST' })
+    .then((x) => x.json())
+    .catch((e) => ({ ok: false, error: e.message }));
+  msg.textContent = r.ok ? '✓ Desconectado do Google.' : `× ${r.error || 'não consegui desconectar'}`;
+  await refreshGoogleStatus();
+});
+
 $('#gearBtn').addEventListener('click', openSettings);
 on('#manageProviders', 'click', openSettings);
 $('#navSettings').addEventListener('click', openSettings);

@@ -12,5 +12,9 @@
   "weather_city": "",
   "weather_lat": null,
   "weather_lon": null,
-  "weather_source": ""
+  "weather_source": "",
+  "googleClientId": "",
+  "googleClientSecret": "",
+  "googleTimezone": "America/Sao_Paulo",
+  "googleRedirectPort": 8899
 }

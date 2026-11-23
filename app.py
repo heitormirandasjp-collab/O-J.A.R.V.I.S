@@ -475,6 +475,13 @@ def load_config() -> dict[str, Any]:
         "continuous_listen_minutes": clamp_minutes(data.get("continuous_listen_minutes", 5)),
         "tts_engine": clamp_tts_engine(data.get("tts_engine", TTS_DEFAULT_ENGINE)),
         "tts_voice": clamp_tts_voice(data.get("tts_voice", ""), data.get("tts_engine", "")),
+        # integrações Google (Gmail + Agenda): o cliente OAuth fica no config.json e é lido
+        # pelo backend na hora de conectar. Sem preservar estas chaves aqui, o próximo
+        # "Salvar" nas configurações apagaria o Client ID/Secret já cadastrados.
+        "googleClientId": str(data.get("googleClientId") or "").strip()[:200],
+        "googleClientSecret": str(data.get("googleClientSecret") or "").strip()[:200],
+        "googleTimezone": str(data.get("googleTimezone") or "America/Sao_Paulo").strip()[:64],
+        "googleRedirectPort": int(data.get("googleRedirectPort") or 8899),
     }
     if not cfg["groqKey"]:
         for legacy in _legacy_configs():
@@ -498,6 +505,10 @@ def load_config() -> dict[str, Any]:
                     "tts_voice": clamp_tts_voice(
                         old.get("tts_voice", cfg["tts_voice"]), old.get("tts_engine", cfg["tts_engine"])
                     ),
+                    "googleClientId": cfg["googleClientId"],
+                    "googleClientSecret": cfg["googleClientSecret"],
+                    "googleTimezone": cfg["googleTimezone"],
+                    "googleRedirectPort": cfg["googleRedirectPort"],
                 }
                 save_config(cfg)  # migra para o local definitivo
                 break
@@ -1210,6 +1221,16 @@ def build_context_block(text: str, now: datetime | None = None) -> str:
     return "\n".join(linhas)
 
 
+def _google_error_summary(r: dict[str, Any] | None) -> str:
+    """Erro da integração Google em uma frase que o modelo e a voz entendam."""
+    erro = str((r or {}).get("error") or "falha na integração com o Google")
+    if "não configurado" in erro:
+        return f"Google não configurado: {erro} Peça ao Comandante para configurar em Configurações → Google."
+    if "não conectado" in erro or "conecte de novo" in erro:
+        return f"Google não conectado: {erro} Peça ao Comandante para conectar em Configurações → Google."
+    return f"erro: {erro}"
+
+
 def run_tool(tool: dict[str, Any]) -> dict[str, Any]:
     name = tool["name"]
     args = tool.get("args") or {}
@@ -1452,6 +1473,127 @@ def run_tool(tool: dict[str, Any]) -> dict[str, Any]:
             return {"name": name, "ok": False, "summary": f"erro: {r['error']}", "detail": r}
         return {"name": name, "ok": True, "summary": f"evento removido ({r.get('removed')})", "detail": r}
 
+    # ── Gmail (somente leitura) ──
+    if name == "gmail-list":
+        query = str(args.get("q") or "is:unread").strip() or "is:unread"
+        try:
+            limit = max(1, min(int(args.get("max") or 8), 15))
+        except Exception:  # noqa: BLE001
+            limit = 8
+        r = _backend(
+            "GET",
+            f"/gmail/messages?q={_urlquote(query)}&max_results={limit}",
+            timeout=45,
+        )
+        if r is None:
+            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
+        if not r.get("ok"):
+            return {"name": name, "ok": False, "summary": _google_error_summary(r), "detail": r}
+        msgs = r.get("messages") or []
+        parts = []
+        for m in msgs[:12]:
+            marca = " [não lido]" if m.get("unread") else ""
+            estrela = " ⭑" if m.get("important") else ""
+            partes = [str(m.get("from") or "remetente desconhecido")[:80], str(m.get("subject") or "(sem assunto)")[:120]]
+            parts.append(f"{partes[0]} — {partes[1]}{marca}{estrela} (id {m.get('id')})")
+        return {
+            "name": name,
+            "ok": True,
+            "summary": " | ".join(parts) if parts else "nenhum email para essa busca",
+            "detail": r,
+        }
+
+    if name == "gmail-read":
+        mid = str(args.get("id") or "").strip()
+        if not mid:
+            return {"name": name, "ok": False, "summary": "informe o id do email (pegue em gmail_list)", "detail": None}
+        r = _backend("GET", f"/gmail/message/{_urlquote(mid)}", timeout=45)
+        if r is None:
+            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
+        if not r.get("ok"):
+            return {"name": name, "ok": False, "summary": _google_error_summary(r), "detail": r}
+        corpo = str(r.get("body") or "")[:1800]
+        return {
+            "name": name,
+            "ok": True,
+            "summary": f"de {r.get('from', '?')} · {r.get('subject', '(sem assunto)')} · {r.get('date', '')}: {corpo}",
+            "detail": {**r, "body": corpo},
+        }
+
+    # ── Google Agenda ──
+    if name == "calendar-list":
+        try:
+            days = max(1, min(int(args.get("days") or 7), 90))
+        except Exception:  # noqa: BLE001
+            days = 7
+        query = str(args.get("q") or "").strip()[:100]
+        path = f"/calendar/events?days={days}&max_results=15" + (f"&q={_urlquote(query)}" if query else "")
+        r = _backend("GET", path, timeout=45)
+        if r is None:
+            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
+        if not r.get("ok"):
+            return {"name": name, "ok": False, "summary": _google_error_summary(r), "detail": r}
+        evs = r.get("events") or []
+        parts = [f"{str(e.get('start') or '')[:16].replace('T', ' ')}: {e.get('summary')}" for e in evs[:12]]
+        return {
+            "name": name,
+            "ok": True,
+            "summary": " | ".join(parts) if parts else "nenhum evento na Google Agenda nesse período",
+            "detail": r,
+        }
+
+    if name == "calendar-add":
+        title = str(args.get("summary") or "").strip()
+        start = str(args.get("start") or "").strip()
+        if not title or not start:
+            return {
+                "name": name,
+                "ok": False,
+                "summary": "informe o título e a data/hora do evento (ex.: 'reunião com o financeiro' em 'amanhã às 15h')",
+                "detail": None,
+            }
+        try:
+            duration = max(5, min(int(args.get("duration_min") or 60), 1440))
+        except Exception:  # noqa: BLE001
+            duration = 60
+        r = _backend(
+            "POST",
+            "/calendar/events",
+            {
+                "summary": title,
+                "start": start,
+                "duration_min": duration,
+                "description": str(args.get("description") or ""),
+                "location": str(args.get("location") or ""),
+            },
+            timeout=45,
+        )
+        if r is None:
+            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
+        if not r.get("ok"):
+            return {"name": name, "ok": False, "summary": _google_error_summary(r), "detail": r}
+        ev = r.get("event") or {}
+        return {
+            "name": name,
+            "ok": True,
+            "summary": (
+                f"evento '{ev.get('summary')}' criado na Google Agenda para "
+                f"{str(ev.get('start') or '')[:16].replace('T', ' ')} (até {str(ev.get('end') or '')[:16].replace('T', ' ')})"
+            ),
+            "detail": r,
+        }
+
+    if name == "calendar-delete":
+        eid = str(args.get("id") or "").strip()
+        if not eid:
+            return {"name": name, "ok": False, "summary": "informe o id do evento (pegue em calendar_list)", "detail": None}
+        r = _backend("DELETE", f"/calendar/events/{_urlquote(eid)}", timeout=45)
+        if r is None:
+            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
+        if not r.get("ok"):
+            return {"name": name, "ok": False, "summary": _google_error_summary(r), "detail": r}
+        return {"name": name, "ok": True, "summary": f"evento removido da Google Agenda ({r.get('removed')})", "detail": r}
+
     return {"name": name, "ok": False, "summary": "ferramenta desconhecida", "detail": None}
 
 
@@ -1474,6 +1616,11 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     {"type": "function", "function": {"name": "stocks", "description": "Cotação de ações (PETR4, AAPL...).", "parameters": {"type": "object", "properties": {"symbols": {"type": "string", "description": "separados por vírgula"}}, "required": ["symbols"]}}},
     {"type": "function", "function": {"name": "currencies", "description": "Cotações de moedas (USD/BRL, EUR/BRL, USD/EUR).", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "weather", "description": "Clima atual e previsão de hoje para a cidade configurada no config.json (geo por IP como reserva; dados reais do open-meteo/wttr.in).", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "gmail_list", "description": "Lista os emails do Gmail do Comandante (somente leitura). Use a busca do próprio Gmail em q: 'is:unread' (padrão), 'is:important', 'from:banco', 'newer_than:2d', 'subject:nota'. Quando o Comandante pedir 'meus emails', prefira is:unread ou is:important e resuma só os mais importantes.", "parameters": {"type": "object", "properties": {"q": {"type": "string", "description": "busca do Gmail (padrão is:unread)"}, "max": {"type": "integer", "description": "quantidade de emails (1-15)"}}}}},
+    {"type": "function", "function": {"name": "gmail_read", "description": "Lê o conteúdo de um email do Gmail pelo id retornado em gmail_list.", "parameters": {"type": "object", "properties": {"id": {"type": "string", "description": "id do email"}}, "required": ["id"]}}},
+    {"type": "function", "function": {"name": "calendar_list", "description": "Lista os eventos da Google Agenda do Comandante nos próximos dias (para saber a agenda real antes de marcar algo).", "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "janela em dias (1-90, padrão 7)"}, "q": {"type": "string", "description": "filtro por texto (opcional)"}}}}},
+    {"type": "function", "function": {"name": "calendar_add", "description": "Cria um evento/reunião na Google Agenda do Comandante.", "parameters": {"type": "object", "properties": {"summary": {"type": "string", "description": "título do evento"}, "start": {"type": "string", "description": "AAAA-MM-DD HH:MM (ou DD/MM/AAAA HH:MM)"}, "duration_min": {"type": "integer", "description": "duração em minutos (padrão 60)"}, "description": {"type": "string"}, "location": {"type": "string"}}, "required": ["summary", "start"]}}},
+    {"type": "function", "function": {"name": "calendar_delete", "description": "Remove um evento da Google Agenda pelo id retornado em calendar_list.", "parameters": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}},
 ]
 
 TOOL_ALIASES = {
@@ -1482,6 +1629,10 @@ TOOL_ALIASES = {
     "agenda_add": "agenda-add", "agenda_list": "agenda-list", "agenda_delete": "agenda-delete",
     "agenda_check": "agenda-check", "stocks": "stocks", "currencies": "currencies",
     "weather": "weather",
+    # Gmail + Google Agenda (integração Google, rota /gmail e /calendar do backend)
+    "gmail_list": "gmail-list", "gmail_read": "gmail-read",
+    "calendar_list": "calendar-list", "calendar_add": "calendar-add",
+    "calendar_delete": "calendar-delete",
 }
 
 # desligar/reiniciar/hibernar/suspender só acontece depois de um "sim" explícito
@@ -1542,6 +1693,8 @@ def _result_is_empty(tool: dict[str, Any], result: dict[str, Any]) -> bool:
         "processes": ("processes", "nenhum processo foi retornado"),
         "stocks": ("results", "nenhuma cotação foi retornada"),
         "agenda-delete": ("removed", "nenhum evento foi removido"),
+        "gmail-list": ("messages", "nenhum email foi retornado para essa busca"),
+        "calendar-list": ("events", "a Google Agenda está vazia nesse período"),
     }
     key, _msg = checks.get(tool["name"], (None, None))
     if key is None:
@@ -1557,6 +1710,8 @@ def _empty_hint(tool: dict[str, Any]) -> str:
         "processes": "nenhum processo foi retornado",
         "stocks": "nenhuma cotação foi retornada",
         "agenda-delete": "nenhum evento foi removido",
+        "gmail-list": "nenhum email foi retornado para essa busca",
+        "calendar-list": "a Google Agenda está vazia nesse período",
     }.get(tool["name"], "a ferramenta não retornou dados")
 
 
@@ -2292,6 +2447,11 @@ async def api_config_masked() -> JSONResponse:
             "configured": provider.configured,
             "tts_engine": cfg["tts_engine"],
             "tts_voice": cfg["tts_voice"],
+            # integrações Google: nunca devolve o Client Secret, só a máscara
+            "googleClientId": cfg["googleClientId"],
+            "googleClientSecret": mask(cfg["googleClientSecret"]),
+            "googleTimezone": cfg["googleTimezone"],
+            "googleRedirectPort": cfg["googleRedirectPort"],
         }
     )
 
@@ -2327,6 +2487,23 @@ async def api_config_post(request: Request) -> JSONResponse:
             cfg["nvidiaKey"] = nkey
     if isinstance(body.get("nvidiaModel"), str):
         cfg["nvidiaModel"] = body["nvidiaModel"].strip()[:120]
+    # ── Google (Gmail + Agenda) ──
+    if isinstance(body.get("googleClientId"), str):
+        cfg["googleClientId"] = body["googleClientId"].strip()[:200]
+    if isinstance(body.get("googleClientSecret"), str):
+        gsecret = body["googleClientSecret"].strip()
+        # mesma regra das outras chaves: placeholder mascarado nunca sobrescreve o segredo real
+        if _looks_masked(gsecret):
+            security_log("config", "tentativa de gravar Client Secret do Google mascarado", blocked=True)
+        else:
+            cfg["googleClientSecret"] = gsecret[:200]
+    if isinstance(body.get("googleTimezone"), str):
+        cfg["googleTimezone"] = (body["googleTimezone"].strip() or "America/Sao_Paulo")[:64]
+    if body.get("googleRedirectPort") is not None:
+        try:
+            cfg["googleRedirectPort"] = max(1024, min(int(body["googleRedirectPort"]), 65535))
+        except Exception:  # noqa: BLE001
+            pass
     if body.get("continuous_listen_minutes") is not None:
         cfg["continuous_listen_minutes"] = clamp_minutes(body.get("continuous_listen_minutes"))
     if body.get("tts_engine") is not None:
@@ -2348,6 +2525,9 @@ async def api_config_post(request: Request) -> JSONResponse:
             "continuous_listen_minutes": cfg["continuous_listen_minutes"],
             "tts_engine": cfg["tts_engine"],
             "tts_voice": cfg["tts_voice"],
+            "googleClientId": cfg["googleClientId"],
+            "googleTimezone": cfg["googleTimezone"],
+            "googleRedirectPort": cfg["googleRedirectPort"],
         }
     )
 

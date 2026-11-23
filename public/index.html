@@ -273,6 +273,21 @@
           <input id="setWeatherCity" type="text" placeholder="ex.: São Paulo, SP" autocomplete="off" />
         </label>
         <p class="hint dim" id="weatherCityHint"></p>
+        <div class="google-box">
+          <div class="g-status"><span class="dot" id="gDot"></span> <b id="gState">verificando…</b></div>
+          <p class="hint dim">Gmail e Google Agenda de verdade: diga “quais são os meus emails” ou
+            “marca uma reunião dia 12 às 15h”. Crie um cliente OAuth <b>Desktop app</b> em
+            <code>console.cloud.google.com/apis/credentials</code> (ative Gmail API e Google
+            Calendar API), cadastre o redirect <code>http://127.0.0.1:8899/google/callback</code>
+            e cole aqui o Client ID e o Client Secret.</p>
+          <label>Google Client ID<input id="setGoogleId" type="text" placeholder="...apps.googleusercontent.com" autocomplete="off" /></label>
+          <label>Google Client Secret<input id="setGoogleSecret" type="password" placeholder="deixe em branco para manter o atual" autocomplete="off" /></label>
+          <div class="modal-actions">
+            <button type="button" class="ghost-btn" id="googleConnect">Conectar Google</button>
+            <button type="button" class="ghost-btn" id="googleDisconnect">Desconectar</button>
+          </div>
+          <p class="hint dim" id="googleMsg"></p>
+        </div>
         <div class="modal-actions">
           <button class="ghost-btn" id="previewVoice">Testar voz</button>
           <button class="ghost-btn" id="downloadVoice">Baixar voz Piper</button>

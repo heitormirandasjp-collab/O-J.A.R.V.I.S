@@ -1351,3 +1351,18 @@ select option { background: var(--surface-2); color: var(--text); }
   .rise, .msg, .toast, .chat-panel, .modal, .chat-overlay, .modal-overlay { animation: none !important; }
   .wave i, .tp-wave i, .eq i { transform: scaleY(0.45); }
 }
+
+/* ── Google (Gmail + Agenda) nas configurações ───────────────── */
+.google-box {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  margin: 6px 0 12px;
+  border: 1px solid rgba(120, 160, 200, .22);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .02);
+}
+.google-box .g-status { display: flex; align-items: center; gap: 8px; font-size: .9rem; }
+.google-box .g-status .dot { width: 8px; height: 8px; border-radius: 50%; background: #5a6b7d; flex: none; }
+.google-box .g-status .dot.ok { background: #38d39f; box-shadow: 0 0 8px rgba(56, 211, 159, .7); }
+.google-box .g-status .dot.warn { background: #ffb648; }
