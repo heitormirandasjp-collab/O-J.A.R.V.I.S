@@ -2356,6 +2356,25 @@ async function openSettings() {
   if (gsecEl) gsecEl.value = '';
   if (c.googleRedirectPort) googlePort = Number(c.googleRedirectPort) || 8899;
   await refreshGoogleStatus();
+  // Conectores: tokens/segredos ficam em branco (o placeholder avisa que o salvo é mantido);
+  // ids e pastas vêm do config.json e o estado real de cada serviço vem do backend.
+  const tdInput = $('#setTodoistToken');
+  if (tdInput) tdInput.value = '';
+  const ttIdInput = $('#setTickTickId');
+  if (ttIdInput) ttIdInput.value = c.tickTickClientId || '';
+  const ttSecInput = $('#setTickTickSecret');
+  if (ttSecInput) ttSecInput.value = '';
+  const ntInput = $('#setNotionToken');
+  if (ntInput) ntInput.value = '';
+  const ntParentInput = $('#setNotionParent');
+  if (ntParentInput) ntParentInput.value = c.notionParentPage || '';
+  const obInput = $('#setObsidianVault');
+  if (obInput) obInput.value = c.obsidianVault || '';
+  const lqInput = $('#setLogseqGraph');
+  if (lqInput) lqInput.value = c.logseqGraph || '';
+  const ttMsg = $('#tickTickMsg');
+  if (ttMsg) ttMsg.textContent = '';
+  await refreshConnectorStatus();
   $('#settingsMsg').textContent = '';
   modal.hidden = false;
 }
@@ -2492,6 +2511,124 @@ on('#googleDisconnect', 'click', async () => {
   await refreshGoogleStatus();
 });
 
+/* ── Conectores: Todoist, TickTick, Notion, Obsidian e Logseq ───── */
+let tickTickPoll = null;
+
+function setConnLine(dotSel, stateSel, label, kind) {
+  const state = $(stateSel);
+  if (state) state.textContent = label;
+  const dot = $(dotSel);
+  if (dot) {
+    dot.classList.toggle('ok', kind === 'ok');
+    dot.classList.toggle('warn', kind === 'warn');
+  }
+}
+
+async function refreshConnectorStatus() {
+  const get = (path) => fetch(`${BACKEND_URL}${path}`, { cache: 'no-store' })
+    .then((r) => r.json())
+    .catch(() => null);
+  const [td, tt, nt, ob, lq] = await Promise.all([
+    get('/todoist/status'),
+    get('/ticktick/status'),
+    get('/notion/status'),
+    get('/obsidian/status'),
+    get('/logseq/status'),
+  ]);
+
+  if (!td) setConnLine('#tdDot', '#tdState', 'backend fora do ar', 'warn');
+  else setConnLine('#tdDot', '#tdState', td.configured ? 'token configurado' : 'falta o token', td.configured ? 'ok' : 'warn');
+
+  if (!tt) {
+    setConnLine('#ttDot', '#ttState', 'backend fora do ar', 'warn');
+  } else {
+    let label = 'não conectado';
+    if (tt.connected) label = 'conectado';
+    else if (!tt.configured) label = 'faltam Client ID/Secret';
+    else if (tt.flow && tt.flow.status === 'waiting') label = 'aguardando autorização no navegador…';
+    else if (tt.flow && tt.flow.status === 'exchanging') label = 'finalizando a conexão…';
+    setConnLine('#ttDot', '#ttState', label, tt.connected ? 'ok' : 'warn');
+    const btn = $('#tickTickConnect');
+    if (btn) btn.textContent = tt.connected ? 'Reconectar TickTick' : 'Conectar TickTick';
+    if (tt.flow && tt.flow.status === 'error' && tt.flow.error) {
+      const msg = $('#tickTickMsg');
+      if (msg) msg.textContent = `× ${tt.flow.error}`;
+    }
+  }
+
+  if (!nt) setConnLine('#nDot', '#nState', 'backend fora do ar', 'warn');
+  else if (!nt.configured) setConnLine('#nDot', '#nState', 'falta o token', 'warn');
+  else setConnLine('#nDot', '#nState', nt.parent_page ? 'conectado' : 'token salvo (sem pai fixo)', 'ok');
+
+  if (!ob) setConnLine('#oDot', '#oState', 'backend fora do ar', 'warn');
+  else if (!ob.configured) setConnLine('#oDot', '#oState', 'falta a pasta do vault', 'warn');
+  else setConnLine('#oDot', '#oState', ob.valid ? `${ob.notes} nota(s)` : 'pasta inválida', ob.valid ? 'ok' : 'warn');
+
+  if (!lq) setConnLine('#lDot', '#lState', 'backend fora do ar', 'warn');
+  else if (!lq.configured) setConnLine('#lDot', '#lState', 'falta a pasta do grafo', 'warn');
+  else setConnLine('#lDot', '#lState', lq.valid ? `${lq.pages} página(s)` : 'pasta inválida', lq.valid ? 'ok' : 'warn');
+
+  return { td, tt, nt, ob, lq };
+}
+
+on('#tickTickConnect', 'click', async () => {
+  const msg = $('#tickTickMsg');
+  if (!msg) return;
+  const cid = ($('#setTickTickId').value || '').trim();
+  const csecret = ($('#setTickTickSecret').value || '').trim();
+  if (!cid) {
+    msg.textContent = 'Informe o Client ID do app TickTick (veja developer.ticktick.com).';
+    return;
+  }
+  const st = await refreshConnectorStatus();
+  const configured = !!(st && st.tt && st.tt.configured);
+  if (!csecret && !configured) {
+    msg.textContent = 'Informe também o Client Secret.';
+    return;
+  }
+  const patch = { tickTickClientId: cid };
+  if (csecret) patch.tickTickClientSecret = csecret;
+  await fetch('/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).catch(() => {});
+  $('#setTickTickSecret').value = '';
+  msg.textContent = 'Abrindo a autorização do TickTick…';
+  const r = await fetch(`${BACKEND_URL}/ticktick/connect`, { method: 'POST' })
+    .then((x) => x.json())
+    .catch((e) => ({ ok: false, error: e.message }));
+  if (!r.ok) {
+    msg.textContent = `× ${r.error || 'não consegui iniciar a conexão'}`;
+    return;
+  }
+  msg.textContent = `Autorize na aba que abriu. O Redirect URL cadastrado precisa ser ${r.redirect_uri || 'http://localhost:8000/ticktick/callback'}.`;
+  window.open(r.url, '_blank', 'noopener');
+  const started = Date.now();
+  if (tickTickPoll) clearInterval(tickTickPoll);
+  tickTickPoll = setInterval(async () => {
+    const s = await refreshConnectorStatus();
+    if (s && s.tt && s.tt.connected) {
+      clearInterval(tickTickPoll);
+      tickTickPoll = null;
+      msg.textContent = '✓ TickTick conectado.';
+      pushEvent('ok', 'TickTick conectado', '');
+    } else if ((s && s.tt && s.tt.flow && s.tt.flow.status === 'error') || Date.now() - started > 310000) {
+      clearInterval(tickTickPoll);
+      tickTickPoll = null;
+    }
+  }, 2500);
+});
+
+on('#tickTickDisconnect', 'click', async () => {
+  const msg = $('#tickTickMsg');
+  const r = await fetch(`${BACKEND_URL}/ticktick/disconnect`, { method: 'POST' })
+    .then((x) => x.json())
+    .catch((e) => ({ ok: false, error: e.message }));
+  if (msg) msg.textContent = r.ok ? '✓ Desconectado do TickTick.' : `× ${r.error || 'não consegui desconectar'}`;
+  await refreshConnectorStatus();
+});
+
 $('#gearBtn').addEventListener('click', openSettings);
 on('#manageProviders', 'click', openSettings);
 $('#navSettings').addEventListener('click', openSettings);
@@ -2559,6 +2696,20 @@ $('#saveSettings').addEventListener('click', async () => {
     contEl.value = String(m);
   }
   saveLocal();
+  // Conectores: segredo em branco = manter o salvo, por isso só entra no corpo quando há valor.
+  const conn = {};
+  const pick = (sel, key) => {
+    const el = $(sel);
+    const v = (el ? el.value : '').trim();
+    if (v) conn[key] = v;
+  };
+  pick('#setTodoistToken', 'todoistToken');
+  pick('#setTickTickId', 'tickTickClientId');
+  pick('#setTickTickSecret', 'tickTickClientSecret');
+  pick('#setNotionToken', 'notionToken');
+  pick('#setNotionParent', 'notionParentPage');
+  pick('#setObsidianVault', 'obsidianVault');
+  pick('#setLogseqGraph', 'logseqGraph');
   const saved = await fetch('/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2573,6 +2724,7 @@ $('#saveSettings').addEventListener('click', async () => {
       continuous_listen_minutes: Number(settings.continuousMinutes) || 0,
       tts_engine: settings.ttsEngine,
       tts_voice: settings.voice,
+      ...conn,
     }),
   }).then((r) => r.json()).catch(() => ({}));
   if (saved.tts_engine) settings.ttsEngine = saved.tts_engine;
@@ -2605,6 +2757,13 @@ $('#saveSettings').addEventListener('click', async () => {
   }
   // aplica já o novo tempo (reinicia o timer se a escuta contínua estiver ativa)
   if (continuousListening) resetContinuousTimer();
+  const tdInput = $('#setTodoistToken');
+  if (tdInput) tdInput.value = '';
+  const ttSecInput = $('#setTickTickSecret');
+  if (ttSecInput) ttSecInput.value = '';
+  const ntInput = $('#setNotionToken');
+  if (ntInput) ntInput.value = '';
+  await refreshConnectorStatus();
   $('#settingsMsg').textContent = `✓ Salvo.${weatherMsg}`;
   const engineLabel = settings.ttsEngine === 'edge' ? 'Edge TTS' : 'Piper';
   pushEvent('ok', 'Configurações salvas', `${engineLabel} · voz ${settings.voice || 'padrão'} · velocidade ${settings.rate}×`);

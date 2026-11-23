@@ -3179,6 +3179,990 @@ def calendar_delete(event_id: str):
     return {"ok": True, "removed": eid}
 
 
+# ── 11.b conectores: Todoist, TickTick, Notion, Obsidian, Logseq ───────
+# Mesmo padrão do Google: sem SDK — HTTP no requests para os serviços de nuvem
+# e arquivos locais (com caminho validado dentro da pasta configurada) para
+# Obsidian e Logseq.
+TODOIST_API_URL = "https://api.todoist.com/api/v1"
+TICKTICK_AUTH_URL = "https://ticktick.com/oauth/authorize"
+TICKTICK_TOKEN_URL = "https://ticktick.com/oauth/token"
+TICKTICK_API_URL = "https://api.ticktick.com/open/v1"
+TICKTICK_SCOPES = "tasks:read tasks:write"
+# Precisa ser EXATAMENTE o Redirect URL cadastrado em developer.ticktick.com.
+TICKTICK_REDIRECT_URI = os.environ.get(
+    "JARVIS_TICKTICK_REDIRECT", "http://localhost:8000/ticktick/callback"
+)
+NOTION_API_URL = "https://api.notion.com/v1"
+NOTION_VERSION = "2026-03-11"
+NOTE_MAX_CHARS = 20000
+
+
+class ConnectorError(Exception):
+    """Erro previsto de um conector (vira JSON amigável, nunca 500 cru)."""
+
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
+
+
+def _remote_json(
+    service: str,
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str],
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+    timeout: float = 30,
+    auth: tuple[str, str] | None = None,
+) -> Any:
+    """Chamada HTTP dos conectores: rede/token/erro do serviço viram ConnectorError."""
+    try:
+        r = requests.request(
+            method, url, headers=headers, params=params, json=body, auth=auth, timeout=timeout
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ConnectorError(f"falha de rede com o {service} ({type(exc).__name__})", 502) from exc
+    if r.status_code == 204 or not r.content:
+        data: Any = {}
+    else:
+        try:
+            data = r.json()
+        except Exception:  # noqa: BLE001
+            data = {}
+    if r.status_code >= 400:
+        detail = ""
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict):
+                detail = str(err.get("message") or err.get("code") or "")
+            elif err:
+                detail = str(err)
+            detail = detail or str(data.get("message") or data.get("error_description") or "")
+        hint = (
+            " — confira o token/segredo em Configurações"
+            if r.status_code in (401, 403)
+            else ""
+        )
+        raise ConnectorError(
+            f"o {service} respondeu HTTP {r.status_code}"
+            + (f": {detail[:200]}" if detail else "")
+            + hint,
+            409 if r.status_code in (401, 403) else 502,
+        )
+    return data
+
+
+# ── Todoist (API REST v1) ───────────────────────────────────────────────
+def _todoist_token() -> str:
+    token = str(_read_config().get("todoistToken") or "").strip()
+    if not token:
+        raise ConnectorError(
+            "Todoist não configurado: cole o API token em Configurações → Todoist.", 400
+        )
+    return token
+
+
+def _todoist_api(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+    timeout: float = 30,
+) -> Any:
+    return _remote_json(
+        "Todoist",
+        method,
+        TODOIST_API_URL + path,
+        headers={"Authorization": f"Bearer {_todoist_token()}"},
+        params=params,
+        body=body,
+        timeout=timeout,
+    )
+
+
+def _todoist_task_summary(task: dict[str, Any], projects: dict[str, str] | None = None) -> dict[str, Any]:
+    due = task.get("due") or {}
+    pid = str(task.get("project_id") or "")
+    return {
+        "id": str(task.get("id") or ""),
+        "content": str(task.get("content") or "")[:300],
+        "description": str(task.get("description") or "")[:500],
+        "project_id": pid,
+        "project": (projects or {}).get(pid, ""),
+        "priority": int(task.get("priority") or 1),
+        "labels": [str(x) for x in (task.get("labels") or [])],
+        "due": str(due.get("string") or due.get("date") or "")[:120],
+        "url": str(task.get("url") or ""),
+    }
+
+
+def _todoist_projects_map() -> dict[str, str]:
+    """id → nome do projeto (falha silenciosa: o nome é só um enfeite na resposta)."""
+    try:
+        data = _todoist_api("GET", "/projects", params={"limit": 100}, timeout=20)
+    except ConnectorError:
+        return {}
+    items = data.get("results") if isinstance(data, dict) else data
+    out: dict[str, str] = {}
+    for p in items or []:
+        if isinstance(p, dict) and p.get("id"):
+            out[str(p["id"])] = str(p.get("name") or "")[:80]
+    return out
+
+
+@app.get("/todoist/status")
+def todoist_status():
+    token = str(_read_config().get("todoistToken") or "").strip()
+    return {"ok": True, "configured": bool(token)}
+
+
+@app.get("/todoist/tasks")
+def todoist_tasks(
+    max_results: int = Query(15, ge=1, le=50),
+    project_id: str = Query(""),
+    q: str = Query(""),
+):
+    params: dict[str, Any] = {"limit": max_results}
+    if (project_id or "").strip():
+        params["project_id"] = project_id.strip()
+    try:
+        data = _todoist_api("GET", "/tasks", params=params)
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    items = data.get("results") if isinstance(data, dict) else data
+    projects = _todoist_projects_map()
+    tasks = [_todoist_task_summary(t, projects) for t in (items or []) if isinstance(t, dict)]
+    # a API v1 não filtra por texto: o filtro por palavra é local
+    needle = (q or "").strip().lower()
+    if needle:
+        tasks = [
+            t
+            for t in tasks
+            if needle in t["content"].lower()
+            or needle in t["description"].lower()
+            or any(needle in label.lower() for label in t["labels"])
+        ]
+    return {"ok": True, "count": len(tasks), "tasks": tasks[:max_results]}
+
+
+class TodoistTaskIn(BaseModel):
+    content: str
+    description: str = ""
+    due_string: str = ""
+    priority: int = 1
+    project_id: str = ""
+
+
+@app.post("/todoist/tasks")
+def todoist_create(body: TodoistTaskIn):
+    content = (body.content or "").strip()[:500]
+    if not content:
+        return JSONResponse({"ok": False, "error": "informe o conteúdo da tarefa"}, status_code=400)
+    payload: dict[str, Any] = {"content": content}
+    if (body.description or "").strip():
+        payload["description"] = body.description.strip()[:2000]
+    if (body.due_string or "").strip():
+        payload["due_string"] = body.due_string.strip()[:200]
+    priority = max(1, min(int(body.priority or 1), 4))
+    if priority > 1:
+        payload["priority"] = priority
+    if (body.project_id or "").strip():
+        payload["project_id"] = body.project_id.strip()[:64]
+    try:
+        data = _todoist_api("POST", "/tasks", body=payload)
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    task = _todoist_task_summary(data if isinstance(data, dict) else {}, _todoist_projects_map())
+    _security_log("todoist", f"tarefa criada: {content[:80]}")
+    return {"ok": True, "task": task}
+
+
+@app.post("/todoist/tasks/{task_id}/close")
+def todoist_close(task_id: str):
+    tid = re.sub(r"[^0-9A-Za-z_-]", "", str(task_id or ""))[:64]
+    if not tid:
+        return JSONResponse({"ok": False, "error": "id de tarefa inválido"}, status_code=400)
+    try:
+        _todoist_api("POST", f"/tasks/{tid}/close")
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    _security_log("todoist", f"tarefa concluída: {tid}")
+    return {"ok": True, "closed": tid}
+
+
+@app.get("/todoist/projects")
+def todoist_projects():
+    try:
+        data = _todoist_api("GET", "/projects", params={"limit": 100})
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    items = data.get("results") if isinstance(data, dict) else data
+    projects = [
+        {"id": str(p.get("id") or ""), "name": str(p.get("name") or "")[:80]}
+        for p in (items or [])
+        if isinstance(p, dict) and p.get("id")
+    ]
+    return {"ok": True, "count": len(projects), "projects": projects}
+
+
+# ── TickTick (Open API v1 + OAuth 2.0) ──────────────────────────────────
+def _ticktick_token_file() -> Path:
+    return _data_dir() / "ticktick_token.json"
+
+
+def _read_ticktick_token() -> dict[str, Any]:
+    try:
+        data = json.loads(_ticktick_token_file().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _write_ticktick_token(tok: dict[str, Any]) -> None:
+    path = _ticktick_token_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(tok, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ticktick_client() -> dict[str, str]:
+    cfg = _read_config()
+    cid = str(cfg.get("tickTickClientId") or "").strip()
+    secret = str(cfg.get("tickTickClientSecret") or "").strip()
+    if not cid or not secret:
+        raise ConnectorError(
+            "TickTick não configurado: informe o Client ID e o Client Secret do app "
+            "criado em developer.ticktick.com (Configurações → TickTick).",
+            400,
+        )
+    return {"client_id": cid, "client_secret": secret}
+
+
+def _ticktick_access_token() -> str:
+    tok = _read_ticktick_token()
+    access = str(tok.get("access_token") or "")
+    expires_at = float(tok.get("expires_at") or 0)
+    if access and expires_at - 60 > time.time():
+        return access
+    raise ConnectorError(
+        "TickTick não conectado (ou acesso expirado). Conecte em Configurações → TickTick.", 409
+    )
+
+
+def _ticktick_api(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+    timeout: float = 30,
+) -> Any:
+    return _remote_json(
+        "TickTick",
+        method,
+        TICKTICK_API_URL + path,
+        headers={"Authorization": f"Bearer {_ticktick_access_token()}"},
+        params=params,
+        body=body,
+        timeout=timeout,
+    )
+
+
+_TICKTICK_FLOW: dict[str, Any] = {"state": "", "status": "idle", "error": ""}
+_TICKTICK_FLOW_LOCK = threading.Lock()
+
+
+def _callback_page(title: str, detail: str) -> str:
+    """Página mostrada na aba do navegador depois do redirect do OAuth."""
+    return (
+        "<!doctype html><html lang=pt-BR><meta charset=utf-8>"
+        f"<title>{html.escape(title)}</title>"
+        '<body style="margin:0;height:100vh;display:grid;place-items:center;background:#08090b;'
+        'color:#dbe7f3;font-family:Segoe UI,system-ui,sans-serif"><div style="text-align:center">'
+        f'<h1 style="color:#3fd0ff;font-weight:500;margin:0 0 10px">{html.escape(title)}</h1>'
+        f'<p style="opacity:.75;margin:0">{html.escape(detail)}</p></div></body></html>'
+    )
+
+
+def _ticktick_exchange(code: str) -> dict[str, Any]:
+    creds = _ticktick_client()
+    data = _remote_json(
+        "TickTick",
+        "POST",
+        TICKTICK_TOKEN_URL,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        auth=(creds["client_id"], creds["client_secret"]),
+        body={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": TICKTICK_REDIRECT_URI,
+            "scope": TICKTICK_SCOPES,
+        },
+    )
+    access = str((data or {}).get("access_token") or "")
+    if not access:
+        raise ConnectorError("o TickTick não devolveu um access token — tente conectar de novo.", 400)
+    tok: dict[str, Any] = {
+        "access_token": access,
+        "token_type": str((data or {}).get("token_type") or "Bearer"),
+        "scope": str((data or {}).get("scope") or TICKTICK_SCOPES),
+        "expires_at": time.time() + float((data or {}).get("expires_in") or 15552000),
+        "connected_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    _write_ticktick_token(tok)
+    _security_log("ticktick", "conta conectada")
+    return tok
+
+
+@app.get("/ticktick/status")
+def ticktick_status():
+    cfg = _read_config()
+    tok = _read_ticktick_token()
+    with _TICKTICK_FLOW_LOCK:
+        flow = {"status": _TICKTICK_FLOW.get("status") or "idle", "error": _TICKTICK_FLOW.get("error") or ""}
+    has_client = bool(str(cfg.get("tickTickClientId") or "").strip())
+    has_secret = bool(str(cfg.get("tickTickClientSecret") or "").strip())
+    expires_at = float(tok.get("expires_at") or 0)
+    return {
+        "ok": True,
+        "configured": has_client and has_secret,
+        "has_client_id": has_client,
+        "has_client_secret": has_secret,
+        "connected": bool(tok.get("access_token")) and expires_at - 60 > time.time(),
+        "redirect_uri": TICKTICK_REDIRECT_URI,
+        "flow": flow,
+    }
+
+
+@app.post("/ticktick/connect")
+def ticktick_connect():
+    try:
+        creds = _ticktick_client()
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    state = secrets.token_urlsafe(18)
+    with _TICKTICK_FLOW_LOCK:
+        _TICKTICK_FLOW.update({"state": state, "status": "waiting", "error": "", "at": time.time()})
+    query = {
+        "client_id": creds["client_id"],
+        "redirect_uri": TICKTICK_REDIRECT_URI,
+        "response_type": "code",
+        "scope": TICKTICK_SCOPES,
+        "state": state,
+    }
+    _security_log("ticktick", f"autorização iniciada (redirect {TICKTICK_REDIRECT_URI})")
+    return {"ok": True, "url": TICKTICK_AUTH_URL + "?" + urlencode(query), "redirect_uri": TICKTICK_REDIRECT_URI}
+
+
+@app.get("/ticktick/callback")
+def ticktick_callback(
+    code: str = Query(""),
+    state: str = Query(""),
+    error: str = Query(""),
+):
+    """Redirect do TickTick: valida o state, troca o código e grava o token."""
+    with _TICKTICK_FLOW_LOCK:
+        expected = str(_TICKTICK_FLOW.get("state") or "")
+    if error or not code or not expected or state != expected:
+        motivo = error or (
+            "state inválido — tente conectar de novo" if code else "o TickTick não devolveu o código"
+        )
+        with _TICKTICK_FLOW_LOCK:
+            _TICKTICK_FLOW.update({"status": "error", "error": motivo})
+        return Response(
+            _callback_page("Não consegui conectar ao TickTick", "Volte ao JARVIS e tente novamente."),
+            media_type="text/html",
+        )
+    try:
+        _ticktick_exchange(code)
+    except ConnectorError as exc:
+        with _TICKTICK_FLOW_LOCK:
+            _TICKTICK_FLOW.update({"status": "error", "error": str(exc)})
+        return Response(
+            _callback_page("Não consegui conectar ao TickTick", str(exc)), media_type="text/html"
+        )
+    with _TICKTICK_FLOW_LOCK:
+        _TICKTICK_FLOW.update({"status": "connected", "error": "", "state": ""})
+    return Response(
+        _callback_page("JARVIS conectado ao TickTick", "Pode fechar esta aba e voltar ao JARVIS."),
+        media_type="text/html",
+    )
+
+
+@app.post("/ticktick/disconnect")
+def ticktick_disconnect():
+    try:
+        _ticktick_token_file().unlink(missing_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": f"não consegui remover o token: {exc}"}, status_code=500
+        )
+    with _TICKTICK_FLOW_LOCK:
+        _TICKTICK_FLOW.update({"status": "idle", "error": ""})
+    _security_log("ticktick", "conta desconectada pelo usuário")
+    return {"ok": True, "connected": False}
+
+
+def _ticktick_project_list() -> list[dict[str, Any]]:
+    data = _ticktick_api("GET", "/project")
+    items = data if isinstance(data, list) else (data.get("projects") or [])
+    return [p for p in (items or []) if isinstance(p, dict) and p.get("id")]
+
+
+@app.get("/ticktick/projects")
+def ticktick_projects():
+    try:
+        items = _ticktick_project_list()
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    projects = [
+        {"id": str(p.get("id")), "name": str(p.get("name") or "")[:80]} for p in items
+    ]
+    return {"ok": True, "count": len(projects), "projects": projects}
+
+
+def _ticktick_task_summary(task: dict[str, Any], project: str = "") -> dict[str, Any]:
+    return {
+        "id": str(task.get("id") or ""),
+        "title": str(task.get("title") or "")[:300],
+        "content": str(task.get("content") or "")[:500],
+        "project_id": str(task.get("projectId") or ""),
+        "project": project,
+        "priority": int(task.get("priority") or 0),
+        "due": str(task.get("dueDate") or "")[:40],
+        "status": int(task.get("status") or 0),
+    }
+
+
+@app.get("/ticktick/tasks")
+def ticktick_tasks(
+    max_results: int = Query(15, ge=1, le=50),
+    project_id: str = Query(""),
+    q: str = Query(""),
+):
+    ids: list[str] = []
+    try:
+        if (project_id or "").strip():
+            ids = [project_id.strip()]
+        else:
+            # a Open API não tem "todas as tarefas": varre os primeiros projetos
+            ids = [str(p["id"]) for p in _ticktick_project_list()[:10]]
+        tasks: list[dict[str, Any]] = []
+        names = {str(p["id"]): str(p.get("name") or "")[:80] for p in _ticktick_project_list()}
+        for pid in ids:
+            data = _ticktick_api("GET", f"/project/{quote(pid, safe='')}/data")
+            for t in (data or {}).get("tasks") or []:
+                if not isinstance(t, dict):
+                    continue
+                if int(t.get("status") or 0) == 2:  # concluída
+                    continue
+                tasks.append(_ticktick_task_summary(t, names.get(pid, "")))
+            if len(tasks) >= max_results:
+                break
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    needle = (q or "").strip().lower()
+    if needle:
+        tasks = [
+            t for t in tasks if needle in t["title"].lower() or needle in t["content"].lower()
+        ]
+    return {"ok": True, "count": len(tasks[:max_results]), "tasks": tasks[:max_results]}
+
+
+class TickTickTaskIn(BaseModel):
+    title: str
+    content: str = ""
+    due_date: str = ""
+    priority: int = 0
+    project_id: str = ""
+
+
+@app.post("/ticktick/tasks")
+def ticktick_create(body: TickTickTaskIn):
+    title = (body.title or "").strip()[:500]
+    if not title:
+        return JSONResponse({"ok": False, "error": "informe o título da tarefa"}, status_code=400)
+    try:
+        projects = _ticktick_project_list()
+        pid = (body.project_id or "").strip()
+        if not pid:
+            inbox = next((p for p in projects if str(p.get("name") or "").lower() in ("inbox", "caixa de entrada")), None)
+            pid = str((inbox or (projects[0] if projects else {})).get("id") or "")
+        if not pid:
+            return JSONResponse(
+                {"ok": False, "error": "nenhum projeto encontrado no TickTick para receber a tarefa"},
+                status_code=400,
+            )
+        payload: dict[str, Any] = {"title": title, "projectId": pid}
+        if (body.content or "").strip():
+            payload["content"] = body.content.strip()[:2000]
+        priority = max(0, min(int(body.priority or 0), 5))
+        if priority:
+            payload["priority"] = priority
+        if (body.due_date or "").strip():
+            start = _parse_dt(body.due_date)
+            if start is None:
+                return JSONResponse(
+                    {"ok": False, "error": f"data inválida: {body.due_date!r} (use AAAA-MM-DD ou AAAA-MM-DD HH:MM)"},
+                    status_code=400,
+                )
+            payload["dueDate"] = start.strftime("%Y-%m-%dT%H:%M:%S%z")
+            payload["timeZone"] = _google_tz()
+        data = _ticktick_api("POST", "/task", body=payload)
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    task = _ticktick_task_summary(data if isinstance(data, dict) else {}, "")
+    _security_log("ticktick", f"tarefa criada: {title[:80]}")
+    return {"ok": True, "task": task}
+
+
+@app.post("/ticktick/tasks/{task_id}/complete")
+def ticktick_complete(task_id: str, project_id: str = Query("")):
+    tid = re.sub(r"[^0-9A-Za-z_-]", "", str(task_id or ""))[:96]
+    if not tid:
+        return JSONResponse({"ok": False, "error": "id de tarefa inválido"}, status_code=400)
+    try:
+        pid = (project_id or "").strip()
+        if not pid:
+            # descobre o projeto varrendo os dados dos projetos (a API exige o par)
+            for proj in _ticktick_project_list()[:10]:
+                cand = str(proj.get("id") or "")
+                data = _ticktick_api("GET", f"/project/{quote(cand, safe='')}/data")
+                if any(str(t.get("id") or "") == tid for t in (data or {}).get("tasks") or []):
+                    pid = cand
+                    break
+        if not pid:
+            return JSONResponse(
+                {"ok": False, "error": "informe o projeto (project_id) da tarefa — pegue em ticktick_list"},
+                status_code=400,
+            )
+        _ticktick_api(
+            "POST", f"/project/{quote(pid, safe='')}/task/{quote(tid, safe='')}/complete"
+        )
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    _security_log("ticktick", f"tarefa concluída: {tid}")
+    return {"ok": True, "completed": tid}
+
+
+# ── Notion (API REST, integração interna) ───────────────────────────────
+def _notion_token() -> str:
+    token = str(_read_config().get("notionToken") or "").strip()
+    if not token:
+        raise ConnectorError(
+            "Notion não configurado: cole o Integration Token em Configurações → Notion "
+            "e compartilhe a página/banco com a integração.",
+            400,
+        )
+    return token
+
+
+def _notion_api(
+    method: str,
+    path: str,
+    *,
+    body: dict[str, Any] | None = None,
+    timeout: float = 30,
+) -> dict[str, Any]:
+    data = _remote_json(
+        "Notion",
+        method,
+        NOTION_API_URL + path,
+        headers={"Authorization": f"Bearer {_notion_token()}", "Notion-Version": NOTION_VERSION},
+        body=body,
+        timeout=timeout,
+    )
+    return data if isinstance(data, dict) else {}
+
+
+def _notion_item_title(item: dict[str, Any]) -> str:
+    """Título de uma página/banco nos formatos antigo e novo da API do Notion."""
+    if isinstance(item.get("title"), list):
+        txt = "".join(
+            str(t.get("plain_text") or "") for t in item["title"] if isinstance(t, dict)
+        )
+        if txt.strip():
+            return txt.strip()[:200]
+    for spec in (item.get("properties") or {}).values():
+        if isinstance(spec, dict) and str(spec.get("type") or "") == "title":
+            txt = "".join(
+                str(t.get("plain_text") or "") for t in spec.get("title") or [] if isinstance(t, dict)
+            )
+            if txt.strip():
+                return txt.strip()[:200]
+    return "(sem título)"
+
+
+def _notion_children(content: str) -> list[dict[str, Any]]:
+    """Conteúdo da nota como blocos de parágrafo (o Notion limita o tamanho)."""
+    children: list[dict[str, Any]] = []
+    for line in (content or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        children.append(
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": text[:1900]}}]},
+            }
+        )
+        if len(children) >= 80:
+            break
+    return children
+
+
+def _notion_database_parent(database_id: str, title: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve o data source do banco (API 2025+) e acha a propriedade de título."""
+    ds_id = ""
+    schema: dict[str, Any] = {}
+    try:
+        db = _notion_api("GET", f"/databases/{quote(database_id, safe='')}")
+    except ConnectorError:
+        db = {}
+    sources = db.get("data_sources") or []
+    if sources and isinstance(sources[0], dict):
+        ds_id = str(sources[0].get("id") or "")
+    if ds_id:
+        try:
+            schema = _notion_api("GET", f"/data_sources/{quote(ds_id, safe='')}")
+        except ConnectorError:
+            schema = {}
+    title_name = "title"
+    for name, spec in (schema.get("properties") or db.get("properties") or {}).items():
+        if isinstance(spec, dict) and str(spec.get("type") or "") == "title":
+            title_name = str(name)
+            break
+    parent: dict[str, Any] = (
+        {"type": "data_source_id", "data_source_id": ds_id}
+        if ds_id
+        else {"type": "database_id", "database_id": database_id}
+    )
+    props = {title_name: {"title": [{"type": "text", "text": {"content": title}}]}}
+    return parent, props
+
+
+@app.get("/notion/status")
+def notion_status():
+    cfg = _read_config()
+    return {
+        "ok": True,
+        "configured": bool(str(cfg.get("notionToken") or "").strip()),
+        "parent_page": bool(str(cfg.get("notionParentPage") or "").strip()),
+    }
+
+
+class NotionPageIn(BaseModel):
+    title: str
+    content: str = ""
+    database_id: str = ""
+    parent_page_id: str = ""
+
+
+@app.post("/notion/pages")
+def notion_create(body: NotionPageIn):
+    title = (body.title or "").strip()[:200]
+    content = (body.content or "").strip()[:NOTE_MAX_CHARS]
+    if not title:
+        return JSONResponse({"ok": False, "error": "informe o título da nota"}, status_code=400)
+    db_id = (body.database_id or "").strip()
+    page_id = (body.parent_page_id or "").strip() or str(
+        _read_config().get("notionParentPage") or ""
+    ).strip()
+    if not db_id and not page_id:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    "informe a página ou o banco do Notion que vai receber a nota "
+                    "(Configurações → Notion → ID da página)"
+                ),
+            },
+            status_code=400,
+        )
+    try:
+        if db_id:
+            parent, props = _notion_database_parent(db_id, title)
+        else:
+            parent = {"type": "page_id", "page_id": page_id}
+            props = {"title": {"title": [{"type": "text", "text": {"content": title}}]}}
+        payload: dict[str, Any] = {"parent": parent, "properties": props}
+        children = _notion_children(content)
+        if children:
+            payload["children"] = children
+        data = _notion_api("POST", "/pages", body=payload)
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    _security_log("notion", f"nota criada: {title[:80]}")
+    return {
+        "ok": True,
+        "page": {
+            "id": str(data.get("id") or ""),
+            "url": str(data.get("url") or ""),
+            "title": title,
+        },
+    }
+
+
+@app.get("/notion/search")
+def notion_search(q: str = Query(""), max_results: int = Query(10, ge=1, le=50)):
+    payload: dict[str, Any] = {"page_size": max_results}
+    if (q or "").strip():
+        payload["query"] = q.strip()[:200]
+    try:
+        data = _notion_api("POST", "/search", body=payload)
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    results = [
+        {
+            "id": str(item.get("id") or ""),
+            "type": str(item.get("object") or ""),
+            "title": _notion_item_title(item),
+            "url": str(item.get("url") or ""),
+        }
+        for item in data.get("results") or []
+        if isinstance(item, dict) and not item.get("archived")
+    ]
+    return {"ok": True, "count": len(results), "results": results}
+
+
+# ── Obsidian e Logseq (pastas locais, nada sai do computador) ───────────
+def _folder_setting(key: str, label: str) -> Path:
+    raw = str(_read_config().get(key) or "").strip()
+    if not raw:
+        raise ConnectorError(
+            f"{label} não configurado: informe a pasta em Configurações → {label}.", 400
+        )
+    path = Path(raw).expanduser()
+    if not path.is_dir():
+        raise ConnectorError(f"a pasta do {label} não existe: {raw}", 400)
+    return path.resolve()
+
+
+def _vault_dir() -> Path:
+    return _folder_setting("obsidianVault", "Obsidian")
+
+
+def _graph_dir() -> Path:
+    return _folder_setting("logseqGraph", "Logseq")
+
+
+def _safe_note_path(root: Path, name: str, subfolder: str = "") -> Path:
+    """Caminho .md SEMPRE dentro da pasta configurada (sem ../, absoluto ou caractere inválido)."""
+    parts = [p for p in re.split(r"[\\/]+", (subfolder or "").strip()) if p and p not in (".", "..")]
+    title = " ".join(re.split(r'[<>:"|?*\x00-\x1f\\/]+', str(name or ""))).strip(" .")[:80]
+    title = " ".join(title.split()) or "Nota"
+    base = root.joinpath(*parts) if parts else root
+    path = (base / f"{title}.md").resolve()
+    if path.parent != root and root not in path.parents:
+        raise ConnectorError("caminho fora da pasta configurada — use um nome de nota simples", 400)
+    return path
+
+
+def _iter_markdown(root: Path, limit: int = 4000):
+    """Notas .md da pasta, pulando diretórios ocultos (.obsidian, .logseq, .trash)."""
+    count = 0
+    for path in root.rglob("*.md"):
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            continue
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        yield path
+        count += 1
+        if count >= limit:
+            return
+
+
+def _search_markdown(root: Path, needle: str, max_results: int) -> list[dict[str, Any]]:
+    """Busca por nome ou conteúdo. Sem termo, devolve as notas modificadas por último."""
+    if not needle:
+        recents: list[tuple[float, Path]] = []
+        for path in _iter_markdown(root, limit=3000):
+            try:
+                recents.append((path.stat().st_mtime, path))
+            except Exception:  # noqa: BLE001
+                continue
+        recents.sort(reverse=True)
+        return [
+            {"title": p.stem, "path": p.relative_to(root).as_posix(), "snippet": ""}
+            for _, p in recents[:max_results]
+        ]
+    hits: list[dict[str, Any]] = []
+    for path in _iter_markdown(root):
+        rel = path.relative_to(root).as_posix()
+        snippet = ""
+        if needle in rel.lower():
+            snippet = "(nome da nota)"
+        else:
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")[:20000]
+            except Exception:  # noqa: BLE001
+                continue
+            idx = text.lower().find(needle)
+            if idx < 0:
+                continue
+            snippet = re.sub(r"\s+", " ", text[max(0, idx - 60) : idx + 140]).strip()
+        hits.append({"title": path.stem, "path": rel, "snippet": snippet})
+        if len(hits) >= max_results:
+            break
+    return hits
+
+
+@app.get("/obsidian/status")
+def obsidian_status():
+    cfg = _read_config()
+    raw = str(cfg.get("obsidianVault") or "").strip()
+    ok = bool(raw) and Path(raw).expanduser().is_dir()
+    notes = 0
+    if ok:
+        try:
+            notes = sum(1 for _ in _iter_markdown(Path(raw).expanduser(), limit=5000))
+        except Exception:  # noqa: BLE001
+            notes = 0
+    return {"ok": True, "configured": bool(raw), "valid": ok, "vault": raw, "notes": notes}
+
+
+class NoteIn(BaseModel):
+    title: str
+    content: str = ""
+    folder: str = ""
+
+
+@app.post("/obsidian/notes")
+def obsidian_create(body: NoteIn):
+    try:
+        root = _vault_dir()
+        path = _safe_note_path(root, body.title, body.folder)
+        content = (body.content or "").strip()[:NOTE_MAX_CHARS]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existed = path.exists()
+        if existed:
+            old = path.read_text(encoding="utf-8", errors="ignore")
+            path.write_text(old.rstrip() + ("\n\n" + content if content else "") + "\n", encoding="utf-8")
+        else:
+            path.write_text(f"# {path.stem}\n\n{content}\n" if content else f"# {path.stem}\n", encoding="utf-8")
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": f"não consegui gravar a nota no vault: {exc}"}, status_code=500
+        )
+    _security_log("obsidian", f"nota gravada: {path.name}")
+    return {"ok": True, "path": path.relative_to(root).as_posix(), "created": not existed}
+
+
+@app.get("/obsidian/notes")
+def obsidian_notes(q: str = Query(""), max_results: int = Query(10, ge=1, le=50)):
+    try:
+        root = _vault_dir()
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    notes = _search_markdown(root, (q or "").strip().lower(), max_results)
+    return {"ok": True, "count": len(notes), "notes": notes}
+
+
+@app.get("/logseq/status")
+def logseq_status():
+    raw = str(_read_config().get("logseqGraph") or "").strip()
+    ok = bool(raw) and Path(raw).expanduser().is_dir()
+    pages = 0
+    today = ""
+    if ok:
+        root = Path(raw).expanduser()
+        pages_dir = root / "pages"
+        if pages_dir.is_dir():
+            try:
+                pages = sum(1 for _ in _iter_markdown(pages_dir, limit=5000))
+            except Exception:  # noqa: BLE001
+                pages = 0
+        today = (root / "journals" / f"{datetime.now().strftime('%Y_%m_%d')}.md").as_posix()
+    return {
+        "ok": True,
+        "configured": bool(raw),
+        "valid": ok,
+        "graph": raw,
+        "pages": pages,
+        "today": today,
+    }
+
+
+class LogseqEntryIn(BaseModel):
+    content: str
+
+
+@app.post("/logseq/journal")
+def logseq_journal(body: LogseqEntryIn):
+    content = (body.content or "").strip()[:NOTE_MAX_CHARS]
+    if not content:
+        return JSONResponse({"ok": False, "error": "informe o que anotar"}, status_code=400)
+    try:
+        root = _graph_dir()
+        journals = root / "journals"
+        journals.mkdir(parents=True, exist_ok=True)
+        path = (journals / f"{datetime.now().strftime('%Y_%m_%d')}.md").resolve()
+        if path.parent != root and root not in path.parents:
+            raise ConnectorError("caminho fora do grafo configurado", 400)
+        block = "\n".join("- " + line if i == 0 else "  " + line for i, line in enumerate(content.splitlines()))
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(block + "\n")
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": f"não consegui gravar no journal do Logseq: {exc}"}, status_code=500
+        )
+    _security_log("logseq", f"bloco no journal: {content[:60]}")
+    return {"ok": True, "path": path.relative_to(root).as_posix()}
+
+
+@app.post("/logseq/pages")
+def logseq_page(body: NoteIn):
+    title = (body.title or "").strip()
+    if not title:
+        return JSONResponse({"ok": False, "error": "informe o título da página"}, status_code=400)
+    try:
+        root = _graph_dir()
+        sub = "/".join(p for p in ("pages", (body.folder or "").strip()) if p)
+        path = _safe_note_path(root, title, sub)
+        content = (body.content or "").strip()[:NOTE_MAX_CHARS]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existed = path.exists()
+        blocks = ["- " + line.strip() for line in content.splitlines() if line.strip()]
+        text = "\n".join(blocks) + ("\n" if blocks else "")
+        if existed:
+            old = path.read_text(encoding="utf-8", errors="ignore")
+            path.write_text(old.rstrip() + ("\n" + text if text else "") + "\n", encoding="utf-8")
+        else:
+            path.write_text(text, encoding="utf-8")
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": f"não consegui gravar a página no Logseq: {exc}"}, status_code=500
+        )
+    _security_log("logseq", f"página gravada: {path.name}")
+    return {"ok": True, "path": path.relative_to(root).as_posix(), "created": not existed}
+
+
+@app.get("/logseq/search")
+def logseq_search(q: str = Query(""), max_results: int = Query(10, ge=1, le=50)):
+    try:
+        root = _graph_dir()
+    except ConnectorError as exc:
+        return _connector_error(exc)
+    notes = _search_markdown(root, (q or "").strip().lower(), max_results)
+    return {"ok": True, "count": len(notes), "pages": notes}
+
+
 # ── 12. /health ─────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
