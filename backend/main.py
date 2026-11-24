@@ -28,6 +28,7 @@ import sys
 import threading
 import tempfile
 import time
+import traceback
 import unicodedata
 import uuid
 import wave
@@ -222,6 +223,50 @@ async def _host_guard(request, call_next):
     return await call_next(request)
 
 
+def _origin_allowed(origin: str) -> bool:
+    """Origem de browser aceitável: a própria UI, o próprio backend ou file:// ("null").
+
+    Chamadas de processo (server.js, app.py, curl) não mandam Origin e seguem livres.
+    """
+    value = (origin or "").strip().lower().rstrip("/")
+    if not value or value == "null":
+        return True
+    if value in {o.strip().lower().rstrip("/") for o in _allowed_origins()}:
+        return True
+    parsed = urlparse(value)
+    # mesma origem do backend (ex.: /docs aberto em 127.0.0.1:8000)
+    if parsed.scheme == "http" and _host_name(parsed.netloc) in _LOOPBACK_NAMES:
+        try:
+            return (parsed.port or 80) == 8000
+        except ValueError:
+            return False
+    return False
+
+
+@app.middleware("http")
+async def _origin_guard(request, call_next):
+    """Bloqueia CSRF vindo de sites abertos no navegador (o backend não usa cookie/sessão).
+
+    A UI roda em 127.0.0.1:8755 e é a única origem de browser aceita. Um site
+    malicioso que faça fetch() para o localhost manda `Sec-Fetch-Site: cross-site` e
+    morre aqui — inclusive nos POST "simples" sem preflight (ex.: /power/cancel), que
+    o CORS sozinho não barra, porque a requisição chega a ser executada.
+    """
+    fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if fetch_site == "cross-site":
+        _security_log(
+            "origem", f"requisição cross-site recusada: {request.method} {request.url.path}", blocked=True
+        )
+        return JSONResponse({"error": "origem não permitida"}, status_code=403)
+    origin = request.headers.get("origin")
+    if origin and not _origin_allowed(origin):
+        _security_log(
+            "origem", f"Origin recusada ({origin}): {request.method} {request.url.path}", blocked=True
+        )
+        return JSONResponse({"error": "origem não permitida"}, status_code=403)
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def _security_headers(request, call_next):
     response = await call_next(request)
@@ -229,6 +274,71 @@ async def _security_headers(request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     return response
+
+
+# ── limite de requisições nas rotas caras/perigosas ─────────────────────
+# Um laço acidental na UI (ou um script local) não pode disparar centenas de TTS
+# nem martelar /exec. Janela deslizante em memória, por rota: (máximo, segundos).
+_RATE_LIMITS: dict[str, tuple[int, int]] = {
+    "/exec": (20, 60),
+    "/power": (6, 60),
+    "/power/cancel": (6, 60),
+    "/kill": (6, 60),
+    "/tts": (120, 60),
+    "/read-file": (60, 60),
+    "/voices/download": (3, 600),
+    "/visualize-3d": (10, 60),
+    "/generate-code": (15, 60),
+}
+_RATE_HITS: dict[str, list[float]] = {}
+_RATE_LOCK = threading.Lock()
+
+
+def _rate_bucket(path: str) -> tuple[str, int, int] | None:
+    """Rota mais específica que casa com o caminho (por prefixo) e o seu limite."""
+    for route in sorted(_RATE_LIMITS, key=len, reverse=True):
+        if path == route or path.startswith(route + "/"):
+            limit, window = _RATE_LIMITS[route]
+            return route, limit, window
+    return None
+
+
+def _rate_limited(path: str) -> tuple[int, int] | None:
+    """Registra a chamada e devolve (limite, janela) quando o teto já foi batido."""
+    bucket = _rate_bucket(path)
+    if not bucket:
+        return None
+    key, limit, window = bucket
+    now = time.monotonic()
+    with _RATE_LOCK:
+        hits = [t for t in _RATE_HITS.get(key, []) if now - t < window]
+        if len(hits) >= limit:
+            _RATE_HITS[key] = hits
+            return limit, window
+        hits.append(now)
+        _RATE_HITS[key] = hits
+    return None
+
+
+@app.middleware("http")
+async def _rate_guard(request, call_next):
+    """429 antes de tocar em TTS, execução de comandos, downloads e geração de código."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return await call_next(request)
+    over = _rate_limited(request.url.path)
+    if over:
+        limit, window = over
+        _security_log(
+            "rate",
+            f"limite excedido em {request.method} {request.url.path} ({limit} por {window}s)",
+            blocked=True,
+        )
+        return JSONResponse(
+            {"error": f"muitas chamadas: limite de {limit} a cada {window}s em {request.url.path}"},
+            status_code=429,
+            headers={"Retry-After": str(window)},
+        )
+    return await call_next(request)
 
 
 UA = {"User-Agent": "Mozilla/5.0 (JARVIS local assistant)"}
@@ -277,6 +387,13 @@ _EXEC_BLOCK_RE = re.compile(
             r"\bFormat-Volume\b", r"\bClear-Disk\b",
             r"\bnet\s+stop\b",
             r"\btaskkill\b(?=[^|\n]*/f)(?=[^|\n]*/im)",
+            # v1.0.28 — download-e-executa e persistência (mesmo padrão do malware)
+            r"\b(?:iex|invoke-expression)\b",
+            r"\b(?:downloadstring|downloadfile|invoke-webrequest\b[^|\n]*-outfile)\b",
+            r"\bbitsadmin\b", r"\bcertutil\b[^|\n]*-urlcache\b",
+            r"\breg\s+add\b[^|\n]*\\run\b", r"\bset-executionpolicy\b",
+            r"\b(?:set|add)-mppreference\b",
+            r"\|\s*(?:cmd|powershell|pwsh|bash|sh|wscript|cscript)\b",
         ]
     ),
     re.IGNORECASE,
@@ -299,14 +416,16 @@ async def _unhandled_error(request: Request, exc: Exception) -> JSONResponse:
     """Camada extra: qualquer exceção não tratada vira 500 JSON e vai para o security.log.
 
     Não substitui os try/except existentes — só garante que nenhum 500 cru chegue ao front.
-    O stacktrace NUNCA é devolvido ao cliente; tipo + mensagem ficam só no log.
+    O stacktrace NUNCA é devolvido ao cliente; tipo, mensagem e traceback ficam só no log.
     """
     detail = str(exc).strip() or type(exc).__name__
     _security_log(
         "erro",
-        f"{request.method} {request.url.path} -> 500 {type(exc).__name__}: {detail}",
+        f"{request.method} {request.url.path} -> 500 {type(exc).__name__}: {detail}\n"
+        + traceback.format_exc(limit=8),
     )
-    return JSONResponse({"error": "internal_server_error", "detail": detail}, status_code=500)
+    # resposta genérica: caminho de arquivo, SQL ou nome de variável não sai daqui
+    return JSONResponse({"error": "internal_server_error"}, status_code=500)
 
 
 def _append_exec_history(entry: dict[str, Any]) -> None:
@@ -351,25 +470,25 @@ class VoiceIn(BaseModel):
 
 # ── autenticação de /exec e /power (v1.0.16) ─────────────────────────────
 def require_exec_token(x_jarvis_token: str | None = Header(default=None)) -> str:
-    """Dependência obrigatória de POST /exec e POST /power.
+    """Dependência obrigatória de POST /exec, /power, /power/cancel e /kill.
 
     Exige o header X-Jarvis-Token igual à variável de ambiente JARVIS_EXEC_TOKEN.
     Sem a env configurada as rotas ficam proibidas (403) — deny-by-default.
     """
     expected = (os.environ.get("JARVIS_EXEC_TOKEN") or "").strip()
     if not expected:
-        _security_log("auth", "JARVIS_EXEC_TOKEN não configurada — /exec e /power proibidos", blocked=True)
+        _security_log("auth", "JARVIS_EXEC_TOKEN não configurada — rotas de execução proibidas", blocked=True)
         raise HTTPException(
             status_code=403,
             detail=(
-                "JARVIS_EXEC_TOKEN não configurada: /exec e /power estão proibidos. "
-                "Defina a variável de ambiente JARVIS_EXEC_TOKEN para habilitá-los."
+                "JARVIS_EXEC_TOKEN não configurada: /exec, /power, /power/cancel e /kill estão "
+                "proibidos. Defina a variável de ambiente JARVIS_EXEC_TOKEN para habilitá-los."
             ),
         )
     if not x_jarvis_token or not secrets.compare_digest(
         x_jarvis_token.encode("utf-8"), expected.encode("utf-8")
     ):
-        _security_log("auth", "token ausente/inválido em /exec ou /power", blocked=True)
+        _security_log("auth", "token ausente/inválido em rota de execução/energia", blocked=True)
         raise HTTPException(
             status_code=403,
             detail=(
@@ -442,10 +561,15 @@ def exec_cmd(body: ExecIn, _exec_token: str = Depends(require_exec_token)):
 _READ_DENY_NAMES = {
     ".env", ".netrc", "_netrc", ".git-credentials", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
     "shadow", "passwd", "gshadow", "sam", "security", "unattend.xml", "config.json",
+    # estado interno do próprio JARVIS: histórico de comandos, log de segurança e
+    # banco de memória não são "documentos do usuário" e não saem por /read-file
+    "security.log", "exec_history.json", "jarvis.log", "memory.db", "memory.json",
+    "cookies.json", "tokens.json", "credentials.json", "google_token.json",
 }
 _READ_DENY_SUFFIXES = {
     ".key", ".pem", ".pfx", ".p12", ".kdbx", ".jks", ".keystore", ".ppk", ".asc", ".ovpn",
     ".env",  # cobre também nomes como "api groq jarvis.env"
+    ".db", ".sqlite", ".sqlite3",
 }
 _READ_DENY_PARTS = (
     '/windows/system32/config', '/windows/system32/sam', '/windows/system32/security',
@@ -562,6 +686,22 @@ def sysinfo():
 
 # ── 4. /tts (Piper) ────────────────────────────────────────────────────
 _tts_cache: dict[str, bytes] = {}
+_TTS_CACHE_MAX = 32   # áudios curtos: ~alguns MB no total, sem crescer sem limite
+
+
+def _tts_cache_get(key: str) -> bytes | None:
+    """Busca no cache tocando a ordem (LRU): o áudio recém-usado é o último a sair."""
+    data = _tts_cache.pop(key, None)
+    if data is not None:
+        _tts_cache[key] = data
+    return data
+
+
+def _tts_cache_put(key: str, audio: bytes) -> None:
+    """Guarda sem estourar a memória: descarta o mais antigo, em vez de zerar tudo."""
+    _tts_cache[key] = audio
+    while len(_tts_cache) > _TTS_CACHE_MAX:
+        _tts_cache.pop(next(iter(_tts_cache)))
 _voices: dict[str, Any] = {}
 _voice_errors: dict[str, str] = {}
 
@@ -647,54 +787,91 @@ def _int_to_words(n: int) -> str:
     return base + (" e " if r < 100 or r % 100 == 0 else " ") + _int_to_words(r)
 
 
+_TIME_RE = re.compile(
+    r"(?<![\d:.,])"
+    r"(?:(?P<pre>às?\s+))?"
+    r"(?P<hh>\d{1,2})"
+    r"(?:h(?P<mm2>\d{2})(?:\s*(?:min|m)\b)?"
+    r"|h(?:s|rs)?\b"
+    r"|:(?P<mm>\d{2})(?::(?P<ss>\d{2}))?)"
+    r"(?!\d)",
+    re.IGNORECASE,
+)
+
+
 def _hours_to_words(t: str) -> str:
-    """10:00 → "dez horas", 10:30 → "dez e meia", 14:30 → "duas e meia da tarde" etc."""
-    def _render(hh: int, mm: int) -> str:
-        _UNTIL_20 = _UNITS  # 1..19 (index 0..19)
-        ones = _UNTIL_20[hh] if 0 <= hh <= 19 else ""
-        meridian = "da manhã" if 0 <= hh < 12 else "da tarde"
+    """10:00 → "dez horas da manhã"; 14:30 / 14h30 → "duas e meia da tarde";
+    9h → "nove horas da manhã"; "às 14h" → "às duas da tarde"."""
+
+    def _period(hh: int) -> str:
+        if hh < 12:
+            return "da manhã"
+        if hh < 18:
+            return "da tarde"
+        return "da noite"
+
+    def _render(hh: int, mm: int, pre: str, period_after: bool) -> str:
+        clock = hh % 12 or 12  # 14 → duas, 0 → doze
+        word = {1: "uma", 2: "duas"}.get(clock) or _int_to_words(clock)
         if mm == 0:
-            h = _int_to_words(hh).replace("um", "uma") if hh == 1 else _int_to_words(hh)
-            if hh == 1:
-                return f"{h} hora {meridian}"
-            return f"{h} horas {meridian}"
-        if mm == 15:
-            return f"{ones} e um quarto {meridian}"
-        if mm == 30:
-            return f"{ones} e meia {meridian}"
-        if mm == 45:
-            nxt = _int_to_words(hh + 1) if hh + 1 <= 23 else _int_to_words(0)
-            return f"{nxt} sem quarto {meridian}"
-        h = _int_to_words(hh)
-        mins = _int_to_words(mm)
-        return f"{h} e {mins} {meridian}"
+            core = "uma hora" if clock == 1 else f"{word} horas"
+        elif mm == 30:
+            core = f"{word} e meia"
+        elif mm == 15:
+            core = f"{word} e quinze"
+        elif mm == 45:
+            core = f"{word} e quarenta e cinco"
+        else:
+            core = f"{word} e {_int_to_words(mm)}"
+        # "às 9h da manhã": o "da manhã" já vem escrito no texto, não repetir
+        tail = "" if period_after else f" {_period(hh)}"
+        if pre:
+            return f"{pre}{core}{tail}"
+        if mm == 0 and not period_after:
+            if hh == 12:
+                return "meio-dia"
+            if hh == 0:
+                return "meia-noite"
+        return f"{core}{tail}"
 
     def repl(m: re.Match) -> str:
         hh = int(m.group("hh") or 0)
-        mm = int(m.group("mm") or 0)
-        sec = m.group("sec") or ""
-        s = _render(hh, mm)
+        mm = int(m.group("mm") or m.group("mm2") or 0)
+        sec = m.group("ss") or ""
+        after = t[m.end(): m.end() + 16].lower()
+        period_after = bool(re.match(r"\s+d[ae]\s+(manh|manha|tard|noit)", after))
+        s = _render(hh, mm, m.group("pre") or "", period_after)
         if sec:
             s += f" e {_int_to_words(int(sec))}"
         return s
 
-    return re.sub(r"(?P<hh>\d{1,2}):(?P<mm>\d{2})(?::(?P<sec>\d{2}))?", repl, t)
+    return _TIME_RE.sub(repl, t)
 
 
 def _money_words(whole: int, cents: int, main_s: str, main_p: str, sub_s: str, sub_p: str) -> str:
     parts: list[str] = []
     if whole or not cents:
-        parts.append(f"{_int_to_words(whole)} {main_s if whole == 1 else main_p}")
+        # "mil reais" em vez de "um mil reais"; "dois milhões de reais"
+        value = "mil" if whole == 1000 else _int_to_words(whole)
+        join = "de " if whole >= 10**6 and whole % 10**6 == 0 else ""
+        parts.append(f"{value} {join}{main_s if whole == 1 else main_p}")
     if cents:
         parts.append(f"{_int_to_words(cents)} {sub_s if cents == 1 else sub_p}")
     return " e ".join(parts)
 
 
 def _expand_numbers(t: str) -> str:
-    """Valores por extenso: "R$ 4,99" → "quatro reais e noventa e nove centavos"."""
+    """Valores por extenso: "R$ 4,99" → "quatro reais e noventa e nove centavos";
+    "1.000" / "1 000" → "mil"."""
 
-    # "1.299,50" → "1299,50" (ponto como separador de milhar)
-    t = re.sub(r"(?<=\d)\.(?=\d{3}(?:\D|$))", "", t)
+    # "1.299,50" / "1 000" / "10.000" → separador de milhar fora (ponto ou espaço).
+    # Só quando o número é inteiramente agrupado de 3 em 3 (IP 192.168.0.1 e versão
+    # 1.0.29 ficam intactos).
+    t = re.sub(
+        r"(?<![\d.])(\d{1,3})((?:[.\s]\d{3})+)(?!\d)(?!\.\d)",
+        lambda m: m.group(1) + re.sub(r"[.\s]", "", m.group(2)),
+        t,
+    )
 
     def money(match: re.Match) -> str:
         sym = (match.group("sym") or "").upper()
@@ -716,6 +893,13 @@ def _expand_numbers(t: str) -> str:
         return f"{whole} vírgula {_int_to_words(int(cents))}" if cents else whole
 
     t = re.sub(r"\b(\d{1,4})(?:,(\d{1,2}))?\s*%", lambda m: pct(m) + " por cento", t)
+
+    # inteiros grandes soltos ("1000", "10 000", anos) por extenso
+    def big(match: re.Match) -> str:
+        n = int(match.group(0))
+        return "mil" if n == 1000 else _int_to_words(n)
+
+    t = re.sub(r"(?<![\d.,])\d{4,}", big, t)
     return t
 
 
@@ -732,6 +916,9 @@ def _speech_text(text: str) -> str:
         t,
         flags=re.IGNORECASE,
     )
+    # unidades que o Piper lê errado (antes de "/" virar "ou")
+    t = re.sub(r"\bkm\s*/\s*h\b", "quilômetros por hora", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bkm\b", "quilômetros", t, flags=re.IGNORECASE)
     # símbolos que o Piper lê errado
     t = t.replace("→", ", ").replace("->", ", ").replace("·", ", ").replace("&", " e ").replace("/", " ou ")
     t = re.sub(r"[*_`#>|~\[\]{}<>^=+\\\u2500-\u257F]", " ", t)
@@ -748,8 +935,6 @@ def _speech_text(text: str) -> str:
     t = re.sub(r"(\d)[.,](\d{1,2})\b", r"\1 vírgula \2", t)
     # abreviações comuns: "vc" → "você", "Vdd" → "verdade", etc.
     t = re.sub(r"\b[A-Za-zÀ-ÿ]{1,4}\b", lambda m: _ABBREV.get(m.group(0).lower(), m.group(0)), t)
-    # "HH:" oligonucleicamente:"10:00" → "dez horas" (caso especial já tratado acima)
-    t = re.sub(r"((?<=\s)|(?<=\A)|(?<=[A-Za-zÀ-ÿéüõ ]))\s*(?P<hh>\d{1,2}):(?P<mm>\d{2})\s*(?=\s|$|[.,!?;:])", lambda m: _hours_to_words(m.group(0)) if m.group(0).strip() else " ", t)
     # pontuação que engasga a voz ("..." vira uma pausa natural)
     t = re.sub(r"\.{2,}", ". ", t)
     t = re.sub(r"([!?])\1+", r"\1", t)
@@ -1030,9 +1215,10 @@ def _tts_piper_response(text: str, path: Path | None, rate: float, pitch: float)
     Em caso de sucesso o motivo vem vazio; em caso de falha a resposta é None.
     """
     key = f"{path}|{rate:.2f}|{pitch:.1f}|{text}"
-    if key in _tts_cache:
+    cached = _tts_cache_get(key)
+    if cached:
         return Response(
-            content=_tts_cache[key],
+            content=cached,
             media_type="audio/wav",
             headers={"X-Engine": "piper", "X-Voice": path.name if path else "none"},
         ), ""
@@ -1047,9 +1233,7 @@ def _tts_piper_response(text: str, path: Path | None, rate: float, pitch: float)
         )
         return None, str(detail)
 
-    if len(_tts_cache) > 24:
-        _tts_cache.clear()
-    _tts_cache[key] = audio
+    _tts_cache_put(key, audio)
     return Response(
         content=audio,
         media_type="audio/wav",
@@ -1061,16 +1245,15 @@ def _tts_edge_response(text: str, voice: str | None, rate: float, pitch: float) 
     """Sintetiza com o Edge TTS (MP3). Devolve (resposta, motivo da falha)."""
     ev = _edge_voice(voice)
     ekey = f"edge|{ev}|{rate:.2f}|{pitch:.1f}|{text}"
-    if ekey in _tts_cache:
+    cached = _tts_cache_get(ekey)
+    if cached:
         return Response(
-            content=_tts_cache[ekey], media_type="audio/mpeg", headers={"X-Engine": "edge", "X-Voice": ev}
+            content=cached, media_type="audio/mpeg", headers={"X-Engine": "edge", "X-Voice": ev}
         ), ""
     audio = tts_edge(text, ev, rate, pitch)
     if not audio:
         return None, str(_edge_errors.get(ev) or _edge_errors.get("import") or "sem internet")
-    if len(_tts_cache) > 24:
-        _tts_cache.clear()
-    _tts_cache[ekey] = audio
+    _tts_cache_put(ekey, audio)
     return Response(
         content=audio, media_type="audio/mpeg", headers={"X-Engine": "edge", "X-Voice": ev}
     ), ""
@@ -1341,7 +1524,7 @@ def power(body: PowerIn, _exec_token: str = Depends(require_exec_token)):
 
 
 @app.post("/power/cancel")
-def power_cancel():
+def power_cancel(_exec_token: str = Depends(require_exec_token)):
     _security_log("power", "cancelamento de desligamento pedido (shutdown /a)")
     try:
         proc = subprocess.run("shutdown /a", shell=True, capture_output=True, timeout=20)
@@ -1360,7 +1543,7 @@ class KillIn(BaseModel):
 
 
 @app.post("/kill")
-def kill_process(body: KillIn):
+def kill_process(body: KillIn, _exec_token: str = Depends(require_exec_token)):
     raw = (body.name or "").strip()
     if not raw:
         return JSONResponse({"error": "informe o nome do programa"}, status_code=400)

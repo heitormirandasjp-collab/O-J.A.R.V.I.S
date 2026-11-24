@@ -54,6 +54,21 @@ function hostAllowed(req) {
   return !host || LOOPBACK_NAMES.has(hostName(host));
 }
 
+/*
+ * Anti-CSRF: a UI é servida por este mesmo processo, então uma requisição feita por
+ * OUTRO site no navegador do usuário é sempre indevida. O CORS bloqueia a leitura da
+ * resposta, não a execução de um POST "simples" (sem preflight) — por isso barramos
+ * aqui, antes de qualquer handler. Chamadas de processo local (app.py, curl) não
+ * mandam Origin e continuam liberadas.
+ */
+function crossSite(req) {
+  if (String(req.headers['sec-fetch-site'] || '').toLowerCase() === 'cross-site') return true;
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  const value = String(origin).trim().replace(/\/+$/, '').toLowerCase();
+  return value !== 'null' && !ALLOWED_ORIGINS.map((o) => o.toLowerCase()).includes(value);
+}
+
 /* CSP da UI principal (ar.html usa CDN e fica sem CSP restritiva). */
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; " +
@@ -1697,9 +1712,11 @@ async function handleConfig(req, res) {
     res.end(
       JSON.stringify({
         provider: cfg.provider,
-        groqKey: cfg.groqKey,
+        // segredos mascarados: o POST ignora o placeholder (looksMasked), então o
+        // painel continua funcionando sem a chave real chegar ao navegador
+        groqKey: mask(cfg.groqKey),
         groqModel: cfg.groqModel,
-        nvidiaKey: cfg.nvidiaKey,
+        nvidiaKey: mask(cfg.nvidiaKey),
         nvidiaModel: cfg.nvidiaModel,
         ollamaUrl: cfg.ollamaUrl,
         ollamaModel: cfg.ollamaModel,
@@ -1801,6 +1818,12 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'host não permitido' }));
       return;
     }
+    if (crossSite(req)) {
+      console.warn(`[segurança] requisição cross-site recusada: ${req.method} ${req.url}`);
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'origem não permitida' }));
+      return;
+    }
     const sec = securityHeaders();
     if (!req.url.startsWith('/ar.html')) sec['Content-Security-Policy'] = CSP;
     for (const [k, v] of Object.entries({ ...sec, ...corsHeaders(req) })) res.setHeader(k, v);
@@ -1826,7 +1849,8 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
     }
     try {
-      res.end(JSON.stringify({ error: e.message }));
+      // mensagem interna (caminho, URL, stack) fica só no console — nunca na resposta
+      res.end(JSON.stringify({ error: 'internal_server_error' }));
     } catch {
       /* resposta já fechada */
     }

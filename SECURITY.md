@@ -15,6 +15,7 @@ tratado como **não confiável**: toda ação passa por validação no backend.
 | Proteção | Detalhe |
 |---|---|
 | **Blacklist** | Comandos destrutivos/de sistema são bloqueados antes de executar: `rm -rf`, `del /f /s`, `format C:`, `mkfs`, `diskpart`, `fdisk`, `dd if=`, fork bomb, `shutdown`/`reboot`/`poweroff`, `bcdedit`, `vssadmin`, `cipher /w`, `wevtutil cl`, `reg delete`, `takeown`, `icacls /grant`, `net user`/`net localgroup`, `sc delete`, `schtasks /create`, `netsh firewall`, `wmic … delete`, `Remove-Item -Recurse`, `mklink` → **HTTP 403** |
+| **Blacklist v1.0.28** | Download-e-executa e persistência também são bloqueados: `iex`/`Invoke-Expression`, `DownloadString`/`DownloadFile`/`Invoke-WebRequest -OutFile`, `bitsadmin`, `certutil -urlcache`, `reg add … \Run`, `Set-ExecutionPolicy`, `Set-MpPreference`/`Add-MpPreference` (desligar antivírus) e **pipe** para outro interpretador (`echo … \| powershell`, `\| cmd`, `\| pwsh`, `\| bash`, `\| wscript`, `\| cscript`) → **HTTP 403** |
 | **Timeout** | Padrão e **máximo de 30 s** por comando (`EXEC_TIMEOUT_MAX`) |
 | **Limite de saída** | **10.000 caracteres** por comando (`EXEC_OUTPUT_LIMIT`), com `truncated: true` |
 | **Limite de entrada** | Comando com mais de 1000 caracteres → **HTTP 413** |
@@ -29,7 +30,7 @@ tratado como **não confiável**: toda ação passa por validação no backend.
 
 | Proteção | Detalhe |
 |---|---|
-| **Arquivos sensíveis** | Bloqueados por nome (`.env`, `.netrc`, `.git-credentials`, `id_rsa`, `id_ed25519`, `shadow`, `passwd`, `sam`, `security`, `config.json`…), por extensão (`.key`, `.pem`, `.pfx`, `.p12`, `.kdbx`, `.jks`, `.keystore`, `.ppk`, `.asc`, `.ovpn`) e por caminho (`…\System32\config`, `…\System32\SAM`, `%APPDATA%\Microsoft\Credentials`, `/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, `.ssh/`, `/root/`, `.git/config`) → **HTTP 403** |
+| **Arquivos sensíveis** | Bloqueados por nome (`.env`, `.netrc`, `.git-credentials`, `id_rsa`, `id_ed25519`, `shadow`, `passwd`, `sam`, `security`, `config.json`, `security.log`, `jarvis.log`, `exec_history.json`, `memory.db`, `memory.json`, `cookies.json`, `tokens.json`, `credentials.json`, `google_token.json`…), por extensão (`.key`, `.pem`, `.pfx`, `.p12`, `.kdbx`, `.jks`, `.keystore`, `.ppk`, `.asc`, `.ovpn`, `.db`, `.sqlite`, `.sqlite3`) e por caminho (`…\System32\config`, `…\System32\SAM`, `%APPDATA%\Microsoft\Credentials`, `/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, `.ssh/`, `/root/`, `.git/config`) → **HTTP 403** |
 | **Pastas permitidas** | Somente **Documents**, **Downloads**, **Desktop** (do usuário), a pasta do app e a pasta de dados (`%APPDATA%\JARVIS`); compare com caminho normalizado (funciona com `\` ou `/`) |
 | **Tamanho** | Máximo **1 MB** por arquivo (`READ_MAX_BYTES`), com `truncated: true` |
 | **Log** | Leitura permitida e tentativa bloqueada vão para `security.log` |
@@ -100,6 +101,9 @@ set JARVIS_READ_ROOTS=D:\Projetos;E:\Docs
 
 - `config.json` (chaves da Groq e da NVIDIA NIM) é gravado com permissão **0600** (`mode 0o600` / `os.chmod`)
   — só o usuário lê.
+- `GET /api/config` (o endpoint que a tela de Ajustes consome) **também mascara**
+  (`masked_config()` em `app.py`): `groqKey`, `nvidiaKey` e `googleClientSecret` saem como
+  `gsk••••3kH0` — nenhum segredo trafega para o navegador.
 - `GET /api/config/masked` (e `POST /config/masked`) devolve a chave **mascarada**
   (`gsk••••7890`), nunca o segredo — seguro para exibir/logar.
 - `POST /api/config` **ignora valores mascarados** (`••••`, `****`): um placeholder nunca
@@ -114,6 +118,12 @@ set JARVIS_READ_ROOTS=D:\Projetos;E:\Docs
 - Headers em todas as respostas: `X-Content-Type-Options: nosniff`,
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`
   (e `Cross-Origin-Opener-Policy: same-origin` no `app.py`).
+- **Anti-CSRF (v1.0.28)**: CORS só esconde a *resposta* — um `POST` de formulário/texto de
+  outro site ainda chega ao handler. Por isso `app.py`, `backend/main.py` e `server.js`
+  têm um **middleware de origem** que roda **antes de tudo**: `Sec-Fetch-Site: cross-site`
+  ou `Origin` fora da allowlist → **403** `{"origem não permitida"}`, com registro
+  `[origem] BLOQUEADO …` no `security.log`. Requisições sem `Origin` (launcher, curl, `file://`
+  → `Origin: null`) e a mesma origem (`:8000`, `:8755`) seguem normalmente.
 
 ## 8. Logs de segurança
 
@@ -300,7 +310,8 @@ assinar os `.exe` publicados.
 | **Header obrigatório** | Cada chamada precisa enviar `X-Jarvis-Token: <valor>` igual à variável de ambiente `JARVIS_EXEC_TOKEN` (comparação em tempo constante via `secrets.compare_digest`) |
 | **Deny-by-default** | Sem `JARVIS_EXEC_TOKEN` configurada, **toda** chamada a `/exec` e `/power` recebe **HTTP 403** antes de chegar à rota — nada executa |
 | **Token ausente/errado** | Idem: **HTTP 403** com `{"detail": "<motivo>"}` (sem stacktrace) e registro `[auth] BLOQUEADO` no `security.log` |
-| **Escopo** | Somente `/exec` e `/power`; `/power/cancel` (só cancela um desligamento pendente) e as demais rotas seguem sem token |
+| **Escopo** | `POST /exec`, `/power`, `/power/cancel` e `/kill` — as que executam comando, mexem no sistema ou encerram processo. As demais rotas seguem sem token |
+| **App empacotado** | `launcher.py` gera `JARVIS_EXEC_TOKEN = secrets.token_urlsafe(32)` a cada execução (só na memória do processo, nada em disco) e o `app.py` repassa o header — a UI funciona sem configuração e o token morre com o app |
 
 Os proxies da UI **repassam o header automaticamente**, lendo a env da própria sessão:
 
@@ -333,3 +344,35 @@ curl -X POST http://127.0.0.1:8000/exec \
   -H "X-Jarvis-Token: <valor>" \
   -d '{"cmd":"ipconfig"}'
 ```
+
+## 16. Rate limit por rota (v1.0.28)
+
+Middleware `_rate_guard` em `backend/main.py`, com janela deslizante por rota e por processo
+(`_RATE_LIMITS`). Estourou o limite → **HTTP 429** com `Retry-After: <janela>` e linha
+`[rate] BLOQUEADO …` no `security.log`. Não atinge `GET`/`HEAD`/`OPTIONS`.
+
+| Rota | Limite |
+|---|---|
+| `POST /exec` | 20 / 60 s |
+| `POST /power`, `/power/cancel`, `/kill` | 6 / 60 s cada |
+| `POST /read-file` | 60 / 60 s |
+| `POST /tts` | 120 / 60 s |
+| `POST /visualize-3d` | 10 / 60 s |
+| `POST /generate-code` | 15 / 60 s |
+| `POST /voices/download` | 3 / 600 s |
+
+O contador vive **em memória**: reiniciar o backend zera os limites — o objetivo é conter
+um loop descontrolado de um modelo/site, não substituir autenticação.
+
+## 17. Erros e cache (v1.0.28)
+
+- **500 sem vazamento**: o handler global de `app.py`, `backend/main.py` e o `catch` final do
+  `server.js` respondem apenas `{"error": "internal_server_error"}`. Tipo, mensagem e
+  `traceback.format_exc(limit=8)` vão **só** para o console e para o `security.log` — antes,
+  uma exceção interna devolvia caminho de arquivo e URL de backend ao navegador.
+- **Cache de TTS com LRU**: `_TTS_CACHE_MAX = 32` áudios em memória; antes era um `dict` sem
+  limite, que crescia a cada frase falada. `_tts_cache_get()`/`_tts_cache_put()` descartam o
+  mais antigo, mantendo o cache quente para as frases repetidas (saudações, atalhos).
+- **`/api/config` mascarado**: a tela de Ajustes recebe `gsk••••3kH0`; ao salvar, o placeholder
+  é ignorado (`_looks_masked`) e a chave real permanece — testado com o round-trip completo
+  `GET` → `POST` → `GET` sem perda de segredo.

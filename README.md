@@ -153,8 +153,8 @@ app Electron, que sobem tudo sozinhos. O que dá pra fazer:
 > 🔴 **Estes endpoints são perigosos: NUNCA exponha o backend na internet. Só use
 > localmente.**
 
-- **`/exec` e `/power` exigem token (v1.0.16)**: as duas rotas têm autenticação
-  obrigatória — só respondem quando a variável de ambiente `JARVIS_EXEC_TOKEN` está
+- **`/exec`, `/power`, `/power/cancel` e `/kill` exigem token (v1.0.16)**: essas rotas têm
+  autenticação obrigatória — só respondem quando a variável de ambiente `JARVIS_EXEC_TOKEN` está
   definida **e** a chamada traz o mesmo valor no header `X-Jarvis-Token`. Sem a env
   (ou com token ausente/errado) a resposta é **403** `{"detail": "<motivo>"}` e o
   bloqueio vai para o `security.log`. Para ativar:
@@ -162,9 +162,11 @@ app Electron, que sobem tudo sozinhos. O que dá pra fazer:
   2. defina no ambiente antes de subir o backend — PowerShell da sessão:
      `$env:JARVIS_EXEC_TOKEN="<valor>"` (ou `setx JARVIS_EXEC_TOKEN "<valor>"` para
      valer em novas janelas);
-  3. envie `X-Jarvis-Token: <valor>` em cada chamada a `/exec` e `/power`.
+  3. envie `X-Jarvis-Token: <valor>` em cada chamada a qualquer uma dessas rotas.
   O template está em [`.env.example`](.env.example); o projeto **não** carrega `.env`
-  automaticamente, a variável precisa estar no ambiente;
+  automaticamente, a variável precisa estar no ambiente. No **app empacotado** o
+  `JARVIS.exe` (`launcher.py`) gera um token aleatório a cada execução, só em memória —
+  as ferramentas funcionam sem configuração e nenhum valor fica gravado em disco;
 - **a sessão que faz o proxy também precisa da env**: o `server.js` e o `app.py` (que ligam
   a UI ao backend em `/exec` e `/power`) leem `JARVIS_EXEC_TOKEN` do **seu** ambiente e
   repassam o header automaticamente — **sem a env no ambiente deles, a UI recebe 403** no
@@ -1120,27 +1122,37 @@ e tudo passa por validação no backend. Resumo do que foi endurecido:
   máximo de **1 MB**;
 - **`/power`**: o `confirmed` do **modelo é descartado** (só o "sim" do Comandante executa),
   **TTL de 120 s**, carência de 30 s, e log de pedidos registrados/confirmados/cancelados/expirados;
-- **`/exec` e `/power` protegidos por token (v1.0.16)**: a dependência
-  `require_exec_token` (via `Depends` em `POST /exec` e `POST /power`) exige o header
+- **`/exec`, `/power`, `/power/cancel` e `/kill` protegidos por token (v1.0.16/v1.0.28)**: a
+  dependência `require_exec_token` (via `Depends` nas quatro rotas) exige o header
   `X-Jarvis-Token` igual à env `JARVIS_EXEC_TOKEN`, comparado em tempo constante
   (`secrets.compare_digest`). Sem a env configurada **toda** chamada é negada antes de
   chegar à rota; com a env mas token ausente/errado, também. Nos dois casos: **403**
   `{"detail": "<motivo>"}` (handler padrão do `HTTPException`, sem stacktrace) e registro
-  no `security.log` com `[auth] BLOQUEADO …`. `/power/cancel` segue sem token (só
-  cancela um desligamento pendente via `shutdown /a`). Template: `.env.example`;
+  no `security.log` com `[auth] BLOQUEADO …`. Template: `.env.example`;
+- **anti-CSRF (v1.0.28)**: `app.py`, `backend/main.py` e `server.js` recusam **403**
+  requisição de outro site aberta no navegador (`Sec-Fetch-Site: cross-site` ou `Origin`
+  fora da lista local) **antes** de rodar o handler — o CORS impede só a leitura da
+  resposta, não o POST "simples" sem preflight. Chamadas de processo (launcher, curl) não
+  mandam `Origin` e continuam liberadas;
+- **rate limit por rota (v1.0.28)** em `backend/main.py`: `/exec` 20/min, `/power`,
+  `/power/cancel` e `/kill` 6/min, `/tts` 120/min, `/read-file` 60/min,
+  `/visualize-3d` 10/min, `/generate-code` 15/min, `/voices/download` 3/10 min — **429**
+  com `Retry-After` e registro `[rate] BLOQUEADO` no `security.log`;
 - **`/tts`**: máximo de **2000 caracteres** e sanitização (sem caracteres de controle nem SSML);
 - **`/api/chat`**: **rate limit de 30/min**, entrada de **5000** e saída de **10000** caracteres,
   respostas sanitizadas (sem HTML/scripts);
-- **config**: `config.json` com permissão **0600** e `GET /api/config/masked` (chave mascarada);
-  um valor mascarado nunca sobrescreve a chave real;
+- **config**: `config.json` com permissão **0600** e **segredos sempre mascarados** —
+  `GET /api/config` e `GET /api/config/masked` devolvem `gsk••••3kH0`, nunca a chave; o
+  placeholder nunca sobrescreve a chave real no `POST`;
 - **CORS** restrito a `http://127.0.0.1:8755` / `http://localhost:8755` (nunca `*`) e headers
   `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`;
 - **logs**: `security.log` em `%APPDATA%\JARVIS\` com comandos, leituras, tentativas de
   desligamento, bloqueios e uso do visualizador 3D;
-- **erros inesperados (v1.0.16)**: `@app.exception_handler(Exception)` global em
+- **erros inesperados (v1.0.16/v1.0.28)**: `@app.exception_handler(Exception)` global em
   `backend/main.py` e `app.py` — qualquer exceção não tratada vira **500 JSON**
-  `{"error": "internal_server_error", "detail": "<tipo>: <mensagem>"}` (sem stacktrace na
-  resposta) e é registrada no `security.log` com **timestamp, método, path, tipo e mensagem**
+  `{"error": "internal_server_error"}` (sem tipo, mensagem nem stacktrace na resposta, para
+  não vazar caminho de arquivo/URL interna) e é registrada no `security.log` com
+  **timestamp, método, path, tipo, mensagem e traceback**
   (ex.: `2026-10-11T17:50:40 [erro] POST /__boom -> 500 RuntimeError: boom de teste`). É
   camada extra: os `try/except` existentes seguem intactos e `HTTPException` (404/403/…)
   continua sendo tratado normalmente.
@@ -1287,6 +1299,39 @@ path traversal (`../../fora` fica contida no vault), journal e página do Logseq
    isso, salvar as configurações apagaria as credenciais já cadastradas.
 4. **Privacidade** — escopo de leitura no Gmail (`gmail.readonly`, sem envio/exclusão), Client
    Secret mascarado em `/api/config/masked` e nenhum token devolvido ao HUD.
+
+## Mudanças recentes (v1.0.29)
+
+Versão de **endurecimento do backend**: nada de tela nova, tudo em `app.py`,
+`backend/main.py`, `server.js` e `launcher.py`.
+
+- **Anti-CSRF de verdade**: CORS só esconde a *resposta* — um site aberto no navegador ainda
+  conseguia disparar `POST /exec`, `/power` ou `/api/config`. Agora os três servidores têm um
+  guarda de origem que roda **antes** do handler e responde **403** `{"origem não permitida"}`
+  para `Sec-Fetch-Site: cross-site` ou `Origin` fora da lista local.
+- **`/kill` e `/power/cancel` passaram a exigir token**: sem `X-Jarvis-Token` (a env
+  `JARVIS_EXEC_TOKEN`), ninguém encerra processo nem cancela um desligamento pendente.
+- **`GET /api/config` não devolve mais as chaves em texto puro** — `groqKey`, `nvidiaKey` e
+  `googleClientSecret` saem mascarados (`gsk••••3kH0`), e o placeholder é ignorado ao salvar,
+  então a tela de Ajustes continua funcionando sem apagar segredo.
+- **`/read-file` não lê mais os próprios segredos**: `security.log`, `jarvis.log`,
+  `exec_history.json`, `memory.db`/`memory.json`, `cookies.json`, `tokens.json`,
+  `credentials.json`, `google_token.json` e qualquer `.db`/`.sqlite` entraram na deny-list.
+- **Blacklist do `/exec` cobrindo download-e-executa**: `iex`/`Invoke-Expression`,
+  `DownloadString`/`DownloadFile`/`-OutFile`, `bitsadmin`, `certutil -urlcache`,
+  `reg add …\Run`, `Set-ExecutionPolicy`, `Set/Add-MpPreference` e pipe para outro
+  interpretador (`| powershell`, `| cmd`, `| bash`…).
+- **Rate limit por rota**: `/exec` 20/min; `/power`, `/power/cancel` e `/kill` 6/min;
+  `/tts` 120/min; `/read-file` 60/min; `/visualize-3d` 10/min; `/generate-code` 15/min;
+  `/voices/download` 3/10 min — **429** com `Retry-After` e registro no `security.log`.
+- **Erro interno não vaza mais nada**: o 500 virou `{"error": "internal_server_error"}`;
+  tipo, mensagem e traceback ficam só no console e no `security.log`.
+- **Cache de TTS com LRU** (32 áudios) em vez de um dicionário sem limite.
+- **`/exec` e `/power` não ficam mais mortos no `.exe`**: o `launcher.py` gera o
+  `JARVIS_EXEC_TOKEN` aleatório a cada execução (só em memória) — antes, como nada definia a
+  env, as ferramentas respondiam 403 no app empacotado.
+
+`v1.0.29` — `JARVIS.exe` e instalador `JARVIS-Setup.exe` regerados.
 
 ## Mudanças recentes (v1.0.28)
 

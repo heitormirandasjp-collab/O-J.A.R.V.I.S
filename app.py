@@ -13,6 +13,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -347,6 +348,38 @@ async def _host_guard(request: Request, call_next):
     return await call_next(request)
 
 
+def _origin_allowed(origin: str) -> bool:
+    """Origem de browser aceitável: a própria UI ou file:// ("null"); sem Origin = processo local."""
+    value = (origin or "").strip().lower().rstrip("/")
+    if not value or value == "null":
+        return True
+    return value in {o.strip().lower().rstrip("/") for o in _allowed_origins()}
+
+
+@app.middleware("http")
+async def _origin_guard(request: Request, call_next):
+    """Bloqueia CSRF vindo de sites abertos no navegador do usuário.
+
+    A UI não usa cookie de sessão, mas um site malicioso ainda podia disparar POST
+    "simples" (sem preflight) contra 127.0.0.1:8755 — o CORS impede a LEITURA da
+    resposta, não a requisição. Aqui a requisição cross-site é recusada antes de
+    rodar: `Sec-Fetch-Site: cross-site` cobre fetch/form/iframe e a checagem de
+    Origin cobre navegadores antigos. Chamadas de processo (launcher/curl) não
+    mandam Origin e seguem liberadas.
+    """
+    fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if fetch_site == "cross-site":
+        security_log(
+            "origem", f"requisição cross-site recusada: {request.method} {request.url.path}", blocked=True
+        )
+        return JSONResponse({"error": "origem não permitida"}, status_code=403)
+    origin = request.headers.get("origin")
+    if origin and not _origin_allowed(origin):
+        security_log("origem", f"Origin recusada ({origin}): {request.method} {request.url.path}", blocked=True)
+        return JSONResponse({"error": "origem não permitida"}, status_code=403)
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def _security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -365,14 +398,16 @@ async def _unhandled_error(request: Request, exc: Exception) -> JSONResponse:
     """Camada extra: qualquer exceção não tratada vira 500 JSON e vai para o security.log.
 
     Não substitui os try/except existentes — só garante que nenhum 500 cru chegue ao front.
-    O stacktrace NUNCA é devolvido ao cliente; tipo + mensagem ficam só no log.
+    O stacktrace NUNCA é devolvido ao cliente; tipo, mensagem e traceback ficam só no log.
     """
     detail = str(exc).strip() or type(exc).__name__
     security_log(
         "erro",
-        f"{request.method} {request.url.path} -> 500 {type(exc).__name__}: {detail}",
+        f"{request.method} {request.url.path} -> 500 {type(exc).__name__}: {detail}\n"
+        + traceback.format_exc(limit=8),
     )
-    return JSONResponse({"error": "internal_server_error", "detail": detail}, status_code=500)
+    # resposta genérica: caminho de arquivo, URL de serviço ou nome de variável não sai daqui
+    return JSONResponse({"error": "internal_server_error"}, status_code=500)
 
 
 UA = {"User-Agent": "JARVIS local"}
@@ -604,6 +639,22 @@ def mask(secret: str) -> str | None:
 def _looks_masked(value: str) -> bool:
     """True se o valor é um placeholder mascarado (não pode sobrescrever a chave real)."""
     return bool(value) and ("•" in value or "*" in value or set(value) <= set("•xX*."))
+
+
+# campos que NUNCA saem crus por /api/config: a UI só precisa saber que existem
+_SECRET_FIELDS = ("groqKey", "nvidiaKey", "googleClientSecret")
+
+
+def masked_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Cópia da configuração com os segredos mascarados.
+
+    Quem grava de volta manda o placeholder e o POST ignora (via _looks_masked), então
+    o painel de ajustes continua funcionando sem nunca devolver a chave ao navegador.
+    """
+    out = dict(cfg)
+    for field in _SECRET_FIELDS:
+        out[field] = mask(str(out.get(field) or ""))
+    return out
 
 
 # ── ferramentas locais (backend na 8000) ────────────────────────────────
@@ -1301,6 +1352,48 @@ def _google_error_summary(r: dict[str, Any] | None) -> str:
     return f"erro: {erro}"
 
 
+# conversão de unidades comuns: grupo -> {unidade: fator para a unidade base do grupo}
+_UNIT_GROUPS: dict[str, dict[str, float]] = {
+    "comprimento": {"mm": 0.001, "cm": 0.01, "m": 1.0, "km": 1000.0, "in": 0.0254, "ft": 0.3048, "mi": 1609.344},
+    "massa": {"mg": 1e-6, "g": 0.001, "kg": 1.0, "t": 1000.0, "lb": 0.45359237, "oz": 0.028349523125},
+    "volume": {"ml": 0.001, "l": 1.0, "m3": 1000.0, "gal": 3.785411784, "floz": 0.0295735295625},
+    "area": {"m2": 1.0, "km2": 1e6, "ha": 1e4, "alq": 24200.0},
+    "velocidade": {"m/s": 1.0, "km/h": 1 / 3.6, "mph": 0.44704},
+    "armazenamento": {"b": 1.0, "kb": 1024.0, "mb": 1024.0 ** 2, "gb": 1024.0 ** 3, "tb": 1024.0 ** 4},
+}
+_UNIT_ALIASES = {"quilometro": "km", "quilômetro": "km", "quilômetros": "km", "metro": "m", "metros": "m",
+                 "centimetro": "cm", "centímetro": "cm", "polegada": "in", "pé": "ft", "milha": "mi", "milhas": "mi", "polegadas": "in", "pés": "ft", "libras": "lb", "onca": "oz", "onça": "oz", "hectares": "ha", "alqueires": "alq", "metros quadrados": "m2", "quilômetros quadrados": "km2", "quilômetro quadrado": "km2", "milimetros": "mm", "milímetros": "mm",
+                 "quilo": "kg", "quilograma": "kg", "quilogramas": "kg", "grama": "g", "gramas": "g",
+                 "libra": "lb", "litro": "l", "litros": "l", "mililitro": "ml", "galao": "gal", "galão": "gal",
+                 "hectare": "ha", "alqueire": "alq", "kmh": "km/h", "km/hora": "km/h", "mb/s": "mb"}
+
+
+def _fmt_pt(n: float) -> str:
+    """Número com vírgula decimal e até 6 casas, sem notação científica."""
+    return f"{n:.6f}".rstrip("0").rstrip(".").replace(".", ",")
+
+
+def _convert_units(value: Any, src: str, dst: str) -> dict[str, Any]:
+    """Converte entre unidades do mesmo grupo (sem rede)."""
+    name = "convert_units"
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return {"name": name, "ok": False, "summary": "informe um valor numérico", "detail": None}
+    a = _UNIT_ALIASES.get(src.strip().lower(), src.strip().lower())
+    b = _UNIT_ALIASES.get(dst.strip().lower(), dst.strip().lower())
+    for group, units in _UNIT_GROUPS.items():
+        if a in units and b in units:
+            result = x * units[a] / units[b]
+            return {
+                "name": name,
+                "ok": True,
+                "summary": f"{x:g} {a} = {_fmt_pt(result)} {b}",
+                "detail": {"value": result, "group": group},
+            }
+    return {"name": name, "ok": False, "summary": f"não sei converter '{src}' para '{dst}' (use unidades do mesmo tipo)", "detail": None}
+
+
 def run_tool(tool: dict[str, Any]) -> dict[str, Any]:
     name = tool["name"]
     args = tool.get("args") or {}
@@ -1484,6 +1577,44 @@ def run_tool(tool: dict[str, Any]) -> dict[str, Any]:
             return {"name": name, "ok": False, "summary": f"erro: {r.get('error') or 'sem dados do clima'}", "detail": r}
         # frase pronta no estilo JARVIS: é o que vai para a voz (e para o modo sem Groq)
         return {"name": name, "ok": True, "summary": _weather_sentence(r), "detail": r}
+
+    if name == "now":
+        now = datetime.now()
+        dias = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+        meses = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto",
+                 "setembro", "outubro", "novembro", "dezembro"]
+        texto = f"{dias[now.weekday()]}, {now.day} de {meses[now.month - 1]} de {now.year}, {now:%H:%M}"
+        return {"name": name, "ok": True, "summary": texto, "detail": {"iso": now.isoformat(timespec="minutes")}}
+
+    if name == "convert_units":
+        return _convert_units(args.get("value"), str(args.get("from_unit") or ""), str(args.get("to_unit") or ""))
+
+    if name == "timer":
+        minutes = args.get("minutes")
+        try:
+            minutes = float(minutes)
+        except (TypeError, ValueError):
+            minutes = 0
+        if not 0 < minutes <= 24 * 60:
+            return {"name": name, "ok": False, "summary": "informe um tempo entre 1 minuto e 24 horas", "detail": None}
+        due = datetime.now() + timedelta(minutes=minutes)
+        label = str(args.get("label") or "temporizador").strip() or "temporizador"
+        r = _backend(
+            "POST",
+            "/agenda/add",
+            {"title": f"⏱ {label}", "datetime": due.strftime("%Y-%m-%d %H:%M"), "description": "temporizador"},
+            timeout=20,
+        )
+        if r is None:
+            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
+        if r.get("error"):
+            return {"name": name, "ok": False, "summary": f"erro: {r['error']}", "detail": r}
+        return {
+            "name": name,
+            "ok": True,
+            "summary": f"temporizador '{label}' de {minutes:g} min, aviso às {due:%H:%M}",
+            "detail": r,
+        }
 
     if name == "agenda-add":
         if not str(args.get("datetime") or "").strip():
@@ -1756,6 +1887,9 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     {"type": "function", "function": {"name": "agenda_add", "description": "Cria um lembrete na agenda.", "parameters": {"type": "object", "properties": {"title": {"type": "string"}, "datetime": {"type": "string", "description": "AAAA-MM-DD HH:MM"}, "description": {"type": "string"}}, "required": ["title", "datetime"]}}},
     {"type": "function", "function": {"name": "agenda_list", "description": "Lista os eventos futuros da agenda.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "agenda_delete", "description": "Remove um evento da agenda pelo id ou pelo título.", "parameters": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}},
+    {"type": "function", "function": {"name": "now", "description": "Data e hora atuais por extenso (ex.: 'segunda-feira, 24 de novembro de 2026, 14:30').", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "convert_units", "description": "Converte um valor entre unidades do mesmo tipo (comprimento, massa, volume, área, velocidade, armazenamento). Ex.: 5 milhas para km.", "parameters": {"type": "object", "properties": {"value": {"type": "number"}, "from_unit": {"type": "string", "description": "ex.: mi, km, lb, kg, gal, l, mb, gb"}, "to_unit": {"type": "string"}}, "required": ["value", "from_unit", "to_unit"]}}},
+    {"type": "function", "function": {"name": "timer", "description": "Cria um temporizador que avisa (lembrete na agenda) depois de X minutos. Ex.: 'me avisa em 10 minutos'.", "parameters": {"type": "object", "properties": {"minutes": {"type": "number", "description": "minutos até o aviso (1 a 1440)"}, "label": {"type": "string", "description": "o que avisar (opcional)"}}, "required": ["minutes"]}}},
     {"type": "function", "function": {"name": "agenda_check", "description": "Eventos que começam nos próximos minutos.", "parameters": {"type": "object", "properties": {"window": {"type": "integer"}}}}},
     {"type": "function", "function": {"name": "stocks", "description": "Cotação de ações (PETR4, AAPL...).", "parameters": {"type": "object", "properties": {"symbols": {"type": "string", "description": "separados por vírgula"}}, "required": ["symbols"]}}},
     {"type": "function", "function": {"name": "currencies", "description": "Cotações de moedas (USD/BRL, EUR/BRL, USD/EUR).", "parameters": {"type": "object", "properties": {}}}},
@@ -1778,6 +1912,7 @@ TOOL_ALIASES = {
     "agenda_add": "agenda-add", "agenda_list": "agenda-list", "agenda_delete": "agenda-delete",
     "agenda_check": "agenda-check", "stocks": "stocks", "currencies": "currencies",
     "weather": "weather",
+    "now": "now", "convert_units": "convert_units", "timer": "timer",
     # Gmail + Google Agenda (integração Google, rota /gmail e /calendar do backend)
     "gmail_list": "gmail-list", "gmail_read": "gmail-read",
     "calendar_list": "calendar-list", "calendar_add": "calendar-add",
@@ -2577,7 +2712,12 @@ async def api_status() -> JSONResponse:
 
 @app.get("/api/config")
 async def api_config_get() -> JSONResponse:
-    return JSONResponse(load_config())
+    """Configuração atual com os segredos MASCARADOS (a chave real nunca chega ao navegador).
+
+    O painel mostra o placeholder e, ao salvar, _looks_masked() descarta o valor —
+    então a chave continua a mesma no config.json.
+    """
+    return JSONResponse(masked_config(load_config()))
 
 
 @app.get("/api/config/masked")

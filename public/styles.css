@@ -1365,3 +1365,282 @@ select option { background: var(--surface-2); color: var(--text); }
 .google-box .g-status .dot { width: 8px; height: 8px; border-radius: 50%; background: #5a6b7d; flex: none; }
 .google-box .g-status .dot.ok { background: #38d39f; box-shadow: 0 0 8px rgba(56, 211, 159, .7); }
 .google-box .g-status .dot.warn { background: #ffb648; }
+
+/* ═══════════════════════════════════════════════════════════
+   PASSE DE DESIGN — leitura de instrumento
+   A identidade é a malha branca sobre grafite (logo): nada de
+   cor nova. Hierarquia vem de escala, peso e hairline; o osso
+   puro fica reservado para o que está ativo agora.
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── 1. tipografia e números ───────────────────── */
+body { letter-spacing: 0.002em; }
+
+/* rótulos em caixa alta são o tell mais genérico do painel:
+   viram frase, com peso no lugar do tracking. */
+.voice-head,
+.wx-head b,
+.mem-head b,
+.op-text small,
+.sf-item small,
+.modal > header b { text-transform: none; letter-spacing: 0.01em; }
+
+.voice-head {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 8px 8px 4px;
+}
+.voice-head small { letter-spacing: 0; }
+
+/* a segunda seção da coluna ganha um respiro de verdade */
+#wakeBtn + .voice-head {
+  margin-top: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hair);
+}
+
+/* números que mudam precisam de largura fixa para não tremer */
+.chip b,
+#sysState,
+.sf-item b,
+.tp-text b,
+.tl-time,
+.op-text b,
+.wx-temp b,
+.wx-grid b,
+.wx-foot b { font-variant-numeric: tabular-nums; }
+
+.clock { font-size: 30px; font-weight: 400; letter-spacing: -0.012em; }
+.date { font-size: 11px; letter-spacing: 0.005em; }
+.clockbox { gap: 2px; }
+
+/* ── 2. sidebar ────────────────────────────────── */
+.sidebar {
+  padding: 22px 15px 15px;
+  background: linear-gradient(180deg, #0b0d10 0%, #090b0d 46%, #08090b 100%);
+}
+
+.brand {
+  gap: 12px;
+  padding: 2px 6px 16px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--hair);
+}
+.brand-logo {
+  width: 34px; height: 34px;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px var(--hair-2), 0 10px 24px rgba(0, 0, 0, 0.5);
+}
+.brand-text h1 {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.29em;
+}
+.brand-text small { margin-top: 5px; font-size: 10.5px; }
+
+.nav { gap: 2px; padding-bottom: 14px; margin-bottom: 2px; }
+.nav-item {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+.nav-item.active {
+  color: #fff;
+  background: rgba(236, 232, 222, 0.07);
+  box-shadow: inset 2px 0 0 var(--bone);
+}
+
+/* microfone: o único objeto elevado do painel */
+.mic-btn {
+  width: 64px; height: 64px;
+  margin: 12px 0 4px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 12px 30px rgba(0, 0, 0, 0.45);
+}
+.mic-btn svg { width: 28px; height: 28px; }
+.mic-btn::after {
+  content: "";
+  position: absolute; inset: -9px;
+  border-radius: 50%;
+  border: 1px solid var(--hair);
+  pointer-events: none;
+}
+.mic-btn.listening::after { border-color: rgba(134, 189, 156, 0.3); }
+.mic-btn.has-speak::after { border-color: rgba(255, 255, 255, 0.22); }
+
+.voice-label {
+  text-align: center;
+  font-size: 12.5px;
+  letter-spacing: 0.005em;
+  color: var(--text);
+}
+.mic-hint { font-size: 11px; padding: 3px 0 8px; }
+
+/* ferramentas ficam mais quietas que a ação principal */
+.focus-btn { min-height: 33px; border-radius: 7px; }
+.focus-btn > span:first-child { transition: color var(--t-fast) var(--ease-out); }
+
+.side-foot { gap: 9px; padding-top: 14px; }
+.sf-item small { font-size: 10.5px; color: var(--faint); }
+.sf-item b { font-size: 12.5px; }
+
+/* ── 3. topbar e barra inferior ────────────────── */
+@media (min-width: 761px) {
+  .topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 20px;
+    height: 70px;
+    padding: 0 22px;
+  }
+  /* a leitura começa em estado → hora → ações, não num relógio centralizado */
+  .clockbox {
+    justify-self: start;
+    align-items: flex-start;
+    padding-left: 20px;
+    border-left: 1px solid var(--hair-2);
+  }
+  .search { width: 288px; }
+}
+@media (min-width: 1241px) {
+  .search { width: 300px; }
+}
+
+.chip {
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  letter-spacing: 0.005em;
+}
+.chip.mini { height: 22px; border-radius: 6px; padding: 0 8px; }
+#sysState { font-family: var(--mono); font-size: 11px; }
+
+.search { height: 34px; border-radius: var(--r-pill); }
+.search kbd { background: rgba(0, 0, 0, 0.32); }
+
+.avatar { width: 32px; height: 32px; border-radius: 9px; }
+
+.talkbar { height: 68px; }
+.talk-pill {
+  border-radius: 10px;
+  border-color: var(--hair-2);
+  background: linear-gradient(180deg, rgba(236, 232, 222, 0.075), rgba(236, 232, 222, 0.028));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.tp-text b { font-size: 13px; font-weight: 500; letter-spacing: 0.03em; }
+.tp-text small { font-size: 11.5px; }
+.exec-btn {
+  color: var(--faint);
+  background: transparent;
+  border-color: var(--hair);
+}
+
+/* ── 4. palco: o globo ganha moldura de instrumento ── */
+.cell-globe {
+  background: radial-gradient(ellipse 80% 72% at 50% 46%, #070809 0%, #050506 58%, #000 100%);
+  box-shadow: inset 0 0 170px 60px rgba(0, 0, 0, 0.6);
+}
+.cell-globe::before,
+.cell-globe::after {
+  content: "";
+  position: absolute;
+  width: 26px; height: 26px;
+  z-index: 2;
+  pointer-events: none;
+  border: 1px solid rgba(236, 232, 222, 0.16);
+}
+.cell-globe::before { top: 18px; left: 18px; border-right: 0; border-bottom: 0; }
+.cell-globe::after { right: 18px; bottom: 18px; border-left: 0; border-top: 0; }
+
+.stage-meta {
+  left: 20px; bottom: 20px;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100% - 40px);
+  padding: 7px 11px;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+  background: rgba(8, 9, 11, 0.5);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.sm-state {
+  font-size: 10.5px;
+  letter-spacing: 0.015em;
+  text-transform: none;
+}
+.sm-engine {
+  padding-left: 14px;
+  border-left: 1px solid var(--hair);
+  font-size: 10.5px;
+  max-width: 38ch;
+}
+
+/* ── 5. conversa e configurações ───────────────── */
+.chat-panel,
+.modal {
+  background: linear-gradient(180deg, #0d1013 0%, #0a0c0e 100%);
+}
+.chat-head, .modal > header { height: 58px; }
+.ch-left b { font-weight: 500; font-size: 12px; letter-spacing: 0.24em; }
+.modal > header b { font-size: 14px; font-weight: 600; }
+
+.msg.bot .bubble,
+.msg.assistant .bubble {
+  background: rgba(255, 255, 255, 0.032);
+  border-radius: 3px var(--r-md) var(--r-md) var(--r-md);
+}
+.msg.user .bubble {
+  background: rgba(220, 214, 200, 0.11);
+  border-color: rgba(220, 214, 200, 0.18);
+  border-radius: var(--r-md) var(--r-md) 3px var(--r-md);
+}
+.meta { font-size: 10.5px; letter-spacing: 0.02em; }
+
+.send-btn { border-radius: 8px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+.seg-btn.on { box-shadow: inset 0 0 0 1px rgba(236, 232, 222, 0.12); }
+
+/* ── 6. foco de teclado e pressão ──────────────── */
+:where(button, a, input, select, [tabindex]):focus-visible {
+  outline: 2px solid rgba(236, 232, 222, 0.72);
+  outline-offset: 2px;
+  border-radius: 7px;
+}
+.nav-item:focus-visible,
+.focus-btn:focus-visible { outline-offset: -2px; }
+
+.tb-btn,
+.mic-test-btn,
+.news-link,
+.mem-forget {
+  transition:
+    color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+.send-btn:active,
+.tb-btn:active,
+.mic-test-btn:active,
+.viz3d-row button:active,
+.mem-actions button:active,
+.news-row button:active,
+.news-link:active,
+.mem-forget:active { transform: scale(0.97); }
+
+/* ── 7. telas estreitas ────────────────────────── */
+@media (max-width: 760px) {
+  .clock { font-size: 24px; }
+  .cell-globe::before,
+  .cell-globe::after { display: none; }
+  .stage-meta { left: 12px; bottom: 12px; padding: 6px 9px; }
+  .brand-text h1 { font-size: 12.5px; }
+}

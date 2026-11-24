@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -227,6 +228,13 @@ def main() -> int:
             print(f"\n  O JARVIS já está em execução, mas a interface não "
                   f"respondeu ({url}).")
         return 0
+
+    # token das rotas que executam comandos/energia: gerado a cada execução e só em
+    # memória. O .exe não define JARVIS_EXEC_TOKEN, e sem ele /exec, /power, /kill e
+    # /power/cancel respondem 403 (deny-by-default). Tudo roda neste mesmo processo,
+    # então publicar a env aqui basta para a UI (app.py) e as ferramentas (backend).
+    if not (os.environ.get("JARVIS_EXEC_TOKEN") or "").strip():
+        os.environ["JARVIS_EXEC_TOKEN"] = secrets.token_urlsafe(32)
 
     if port_open(TOOLS_PORT):
         print(f"  ferramentas/voz: já em execução na porta {TOOLS_PORT}")

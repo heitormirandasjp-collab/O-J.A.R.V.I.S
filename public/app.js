@@ -219,7 +219,7 @@ let audioCtx = null;          // um único AudioContext para mic + TTS
 let ttsAnalyser = null;       // análise da voz do JARVIS (TTS)
 let micAnalyser = null;       // análise do microfone
 let micAudioStream = null;    // stream do getUserMedia (só quando a escuta está ativa)
-let audioData = null;         // Uint8Array reutilizado a cada frame
+let voiceTimeData = null;     // Uint8Array (domínio do tempo) reutilizado a cada frame
 const AUDIO_FFT = 256;
 
 function ensureAudioCtx() {
@@ -250,18 +250,49 @@ function audioAnalyser(which) {
   }
 }
 
-/** Manda o áudio do TTS pelo analisador sem cortar o som. */
+/** Cadeia de saída da voz do JARVIS: analisador (mede o sinal cru) → ganho
+    (AGC) → compressor → alto-falante. O ganho põe a fala no mesmo volume em
+    qualquer motor (Piper e Edge TTS chegam com níveis bem diferentes) e o
+    compressor segura os picos que esse ganho levanta. */
+let ttsGain = null;
+let ttsWired = false;
+function ttsChain() {
+  const ac = ensureAudioCtx();
+  if (!ac) return null;
+  const node = audioAnalyser('tts');
+  if (!node) return null;
+  if (ttsWired) return node;
+  try {
+    const gain = ac.createGain();
+    gain.gain.value = 1;
+    const comp = ac.createDynamicsCompressor();
+    comp.threshold.value = -12;
+    comp.knee.value = 18;
+    comp.ratio.value = 4;
+    comp.attack.value = 0.004;
+    comp.release.value = 0.18;
+    node.connect(gain);
+    gain.connect(comp);
+    comp.connect(ac.destination);
+    ttsGain = gain;
+  } catch {
+    /* sem cadeia de ganho: liga direto para não perder o som */
+    try { node.connect(ac.destination); } catch { /* nada a fazer */ }
+  }
+  ttsWired = true;
+  return node;
+}
+
+/** Manda o áudio do TTS pela cadeia sem cortar o som. */
 function routeTtsAudio(el) {
   const ac = ensureAudioCtx();
   if (!ac) return;
   try {
     if (ac.state === 'suspended') ac.resume().catch(() => {});
     if (ac.state !== 'running') return;   // ainda sem permissão: toca normal, sem análise
-    const node = audioAnalyser('tts');
-    if (!node) return;
-    const source = ac.createMediaElementSource(el);
-    source.connect(node);
-    node.connect(ac.destination);
+    const input = ttsChain();
+    if (!input) return;
+    ac.createMediaElementSource(el).connect(input);
   } catch { /* áudio segue no caminho normal */ }
 }
 
@@ -294,26 +325,68 @@ function syncMicAnalyser() {
   else stopMicAnalyser();
 }
 
+/* ── nível da voz (0..1) ─────────────────────────
+   O ritmo da fala está na envoltória (RMS no domínio do tempo), não no
+   espectro: a média dos bins quase não muda entre uma sílaba e a pausa, e era
+   por isso que a esfera pulsava num compasso senoidal igual em toda frase.
+   O RMS passa por um ganho automático por fonte, então voz baixa do Piper,
+   voz alta do Edge TTS e o microfone chegam todos na mesma escala. */
+const VOICE_RMS_TARGET = 0.085;   // referência de RMS da fala normalizada
+const VOICE_REF_MIN = 0.008;      // piso do seguidor (silêncio não vira ganho infinito)
+const voiceRef = { tts: 0.02, mic: 0.02 };
+
+function applyTtsGain(gain) {
+  if (!ttsGain || !audioCtx) return;
+  const g = ttsGain.gain;
+  try {
+    if (Math.abs(g.value - gain) > 0.03) g.setTargetAtTime(gain, audioCtx.currentTime, 0.35);
+  } catch { /* sem automação: fica o valor atual */ }
+}
+
+/** Nível normalizado (0..1) de uma fonte: RMS cru → AGC → curva perceptual. */
+function voiceLevel(which) {
+  const node = which === 'tts' ? ttsAnalyser : micAnalyser;
+  const ac = audioCtx;
+  if (!node || !ac || ac.state !== 'running') return null;
+  try {
+    if (!voiceTimeData || voiceTimeData.length !== node.fftSize) {
+      voiceTimeData = new Uint8Array(node.fftSize);
+    }
+    node.getByteTimeDomainData(voiceTimeData);
+    let sum = 0;
+    for (let i = 0; i < voiceTimeData.length; i++) {
+      const v = (voiceTimeData[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / voiceTimeData.length);
+    /* o seguidor sobe rápido (pega a intensidade das sílabas) e desce devagar
+       (o silêncio entre palavras não explode o ganho do trecho seguinte) */
+    const ref = voiceRef[which];
+    voiceRef[which] = Math.max(VOICE_REF_MIN,
+      ref + (rms - ref) * (rms > ref ? 0.2 : 0.0035));
+    const gain = Math.min(4, Math.max(0.7, VOICE_RMS_TARGET / voiceRef[which]));
+    if (which === 'tts') applyTtsGain(gain);
+    /* RMS × ganho fica perto do alvo na fala contínua (~0.6 de nível) e encosta
+       em 1 nas sílabas fortes, na mesma escala para voz e microfone */
+    return Math.min(1, Math.pow((rms * gain) / (VOICE_RMS_TARGET * 1.7), 0.85));
+  } catch {
+    return null;
+  }
+}
+
 /** Nível atual (0..1) da fonte certa: TTS falando > microfone ouvindo. */
 function audioLevel() {
-  let node = null;
-  if (window.isSpeaking) node = ttsAnalyser;
-  else if (window.isListening) node = micAnalyser;
-  const ac = audioCtx;
-  if (node && ac && ac.state === 'running') {
-    try {
-      if (!audioData || audioData.length !== node.frequencyBinCount) {
-        audioData = new Uint8Array(node.frequencyBinCount);
-      }
-      node.getByteFrequencyData(audioData);
-      let sum = 0;
-      for (let i = 0; i < audioData.length; i++) sum += audioData[i];
-      return Math.min(1, sum / audioData.length / 130);
-    } catch { /* cai no fallback */ }
+  if (window.isSpeaking) {
+    const level = voiceLevel('tts');
+    if (level !== null) return level;
+  } else if (window.isListening) {
+    const level = voiceLevel('mic');
+    if (level !== null) return level;
   }
-  // sem analisador: oscilação senoidal de reserva enquanto fala/ouve
+  /* sem analisador (contexto de áudio bloqueado): respiração mínima, só para a
+     esfera não ficar completamente morta enquanto há fala ou escuta */
   if (window.isSpeaking || window.isListening) {
-    return 0.12 + 0.08 * Math.abs(Math.sin(performance.now() / 420));
+    return 0.10 + 0.05 * Math.abs(Math.sin(performance.now() / 520));
   }
   return 0;
 }
@@ -444,14 +517,18 @@ function globeThree(c) {
       uniform float uDentRad[4];
       uniform vec3 uDentPull[4];
       uniform int uDentOn;
+      uniform float uBeat;
 
       /* Respiração da fala: só existe com uVoice > 0, então em repouso a malha
          fica exatamente como foi aprovada. tt é um relógio próprio, que anda
-         mesmo no reduced-motion (o balanço de repouso usa uTime, que congela). */
-      vec3 wobble(vec3 p, float y, float seed, float tt, float talk) {
+         mesmo no reduced-motion (o balanço de repouso usa uTime, que congela).
+         uBeat é a envoltória da voz: a ondulação só cresce nas sílabas, então a
+         superfície pulsa com a fala em vez de ondular num compasso fixo. */
+      vec3 wobble(vec3 p, float y, float seed, float tt, float talk, float beat) {
         if (talk <= 0.001) return p;
-        float amp = talk * (0.048 * sin(tt * 6.4 + seed * 6.2832)
-                          + 0.030 * sin(y * 7.0 - tt * 4.6 + seed * 1.7));
+        float amp = talk * (0.55 + 1.35 * beat)
+                  * (0.048 * sin(tt * 6.4 + seed * 6.2832)
+                   + 0.030 * sin(y * 7.0 - tt * 4.6 + seed * 1.7));
         return p * (1.0 + amp);
       }
 
@@ -478,6 +555,7 @@ function globeThree(c) {
       uTime: { value: 0 },
       uTalkTime: { value: 0 },
       uVoice: { value: 0 },
+      uBeat: { value: 0 },
       uScale: { value: 900 },
     }, dentUniforms),
     vertexShader: `
@@ -493,7 +571,7 @@ function globeThree(c) {
       varying float vDepth;
       void main() {
         vec3 base = normalize(position);
-        vec3 p = wobble(deform(base), base.y, aRand, uTalkTime, uVoice);
+        vec3 p = wobble(deform(base), base.y, aRand, uTalkTime, uVoice, uBeat);
         p *= 1.0 + 0.004 * sin(uTime * 0.9);
 
         /* normal por diferenças finitas na própria deformação: o caroço pega luz
@@ -504,8 +582,8 @@ function globeThree(c) {
         float eps = 0.035;
         vec3 na = normalize(base + t1 * eps);
         vec3 nb = normalize(base + t2 * eps);
-        vec3 pa = wobble(deform(na), na.y, aRand, uTalkTime, uVoice);
-        vec3 pb = wobble(deform(nb), nb.y, aRand, uTalkTime, uVoice);
+        vec3 pa = wobble(deform(na), na.y, aRand, uTalkTime, uVoice, uBeat);
+        vec3 pb = wobble(deform(nb), nb.y, aRand, uTalkTime, uVoice, uBeat);
         vec3 nrm = normalize(cross(pa - p, pb - p));
         if (dot(nrm, base) < 0.0) nrm = -nrm;
 
@@ -569,6 +647,7 @@ function globeThree(c) {
       uScale: mat.uniforms.uScale,
       uVoice: mat.uniforms.uVoice,
       uTalkTime: mat.uniforms.uTalkTime,
+      uBeat: mat.uniforms.uBeat,
     }, dentUniforms),
     vertexShader: `
       uniform float uScale;
@@ -579,7 +658,7 @@ function globeThree(c) {
       varying float vA;
       void main() {
         vec3 base = normalize(position);
-        vec3 p = wobble(deform(base), base.y, aRand, uTalkTime, uVoice);
+        vec3 p = wobble(deform(base), base.y, aRand, uTalkTime, uVoice, uBeat);
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         vec3 n = normalize(normalMatrix * base);
         float key = max(dot(n, normalize(vec3(-0.50, 0.62, 0.60))), 0.0);
@@ -616,7 +695,7 @@ function globeThree(c) {
   /* Camada de fios: a malha propriamente dita. Só o hemisfério voltado para a
      câmera aparece, senão a rede de trás atravessa a da frente e vira moiré. */
   const netMat = new THREE.ShaderMaterial({
-    uniforms: Object.assign({ uVoice: mat.uniforms.uVoice, uTalkTime: mat.uniforms.uTalkTime }, dentUniforms),
+    uniforms: Object.assign({ uVoice: mat.uniforms.uVoice, uTalkTime: mat.uniforms.uTalkTime, uBeat: mat.uniforms.uBeat }, dentUniforms),
     vertexShader: `
       attribute float aRand;
       uniform float uVoice;
@@ -626,7 +705,7 @@ function globeThree(c) {
       varying float vR;
       void main() {
         vec3 base = normalize(position);
-        vec3 p = wobble(deform(base), base.y, aRand, uTalkTime, uVoice);
+        vec3 p = wobble(deform(base), base.y, aRand, uTalkTime, uVoice, uBeat);
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         vec3 n = normalize(normalMatrix * base);
         float face = dot(n, normalize(-mv.xyz));
@@ -843,7 +922,8 @@ function globeThree(c) {
   const uAmp = dentUniforms.uDentAmp.value;
   const uRad = dentUniforms.uDentRad.value;
   const uPull = dentUniforms.uDentPull.value;
-  let glow = 0;
+  let glow = 0;                /* brilho: média curta da fala (sustenta a esfera) */
+  let beat = 0;                /* volume: envoltória rápida, uma batida por sílaba */
   let prev = 0;
   let talkTime = 0;            /* relógio da fala, independente do reduced-motion */
   let slowFrames = 0;
@@ -858,10 +938,16 @@ function globeThree(c) {
     prev = t;
 
     const level = audioLevel();   /* 0..1: voz do JARVIS (TTS) ou do usuário (mic) */
-    const target = Math.max(level, window.isSpeaking ? 0.55 : 0);
+    /* sem piso artificial: antes havia um 0.55 fixo enquanto falava, e era ele
+       que deixava a pulsação igual em toda frase. Agora o brilho é a média
+       curta da fala e `beat` é a envoltória rápida, que abre o volume a cada
+       sílaba — o mesmo caminho que alimenta as barras da voz. */
+    const floorLevel = (window.isSpeaking || window.isListening) ? 0.14 : 0;
+    const target = Math.max(level, floorLevel);
     /* amaciamento normalizado por tempo: o mesmo resultado em 60 Hz ou 180 Hz */
     const k60 = (k) => 1 - Math.pow(1 - k, dt * 60);
-    glow += (target - glow) * k60(target > glow ? 0.18 : 0.04);
+    glow += (target - glow) * k60(target > glow ? 0.3 : 0.06);
+    beat += (level - beat) * k60(level > beat ? 0.55 : 0.14);
     const still = reducedMotion.matches;
 
     let dentOn = 0;
@@ -905,11 +991,12 @@ function globeThree(c) {
     zoom += (targetZoom - zoom) * k60(0.09);
     camera.position.z = zoom;
 
-    /* a bola respira junto com a fala: superfície (shader) + volume (grupo) */
+    /* a bola respira junto com a fala: o volume segue a sílaba (beat), não um
+       seno de frequência fixa — incha no trecho forte e volta nas pausas */
     talkTime += dt;
-    if (glow > 0.002) {
-      group.scale.setScalar(1 + 0.030 * glow * Math.sin(talkTime * 5.2));
-      group.rotation.z = 0.014 * glow * Math.sin(talkTime * 3.1);
+    if (glow > 0.002 || beat > 0.002) {
+      group.scale.setScalar(1 + 0.13 * beat + 0.012 * glow);
+      group.rotation.z = 0.022 * beat * Math.sin(talkTime * 2.4);
     } else if (group.scale.x !== 1 || group.rotation.z !== 0) {
       group.scale.setScalar(1);
       group.rotation.z = 0;
@@ -918,6 +1005,7 @@ function globeThree(c) {
     mat.uniforms.uTime.value = still ? 0 : t * 0.001;
     mat.uniforms.uTalkTime.value = talkTime;
     mat.uniforms.uVoice.value = glow;
+    mat.uniforms.uBeat.value = beat;
     renderer.render(scene, camera);
   })(0);
 }
