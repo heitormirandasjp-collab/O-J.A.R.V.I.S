@@ -93,7 +93,7 @@ Tudo fica em **`config.json`**, na raiz do projeto (no `.exe`, em
 | `groqKey` | chave da API da Groq — obrigatória quando o provedor é `groq` | — |
 | `groqModel` | modelo da Groq (a lista tem fallback interno) | vazio = modelos testados |
 | `nvidiaKey` | chave da NVIDIA NIM (`nvapi-…`) — obrigatória quando o provedor é `nvidia` | — |
-| `nvidiaModel` | id do modelo no catálogo da NVIDIA (ex.: `meta/llama-3.3-70b-instruct`) | vazio = modelos testados |
+| `nvidiaModel` | id do modelo no catálogo da NVIDIA (ex.: `nvidia/nemotron-3.5-lightning-30b-a3b`); o nome de exibição também é convertido para o id | vazio = modelos testados |
 | `ollamaUrl` | URL base do Ollama (compatível com OpenAI) | `http://127.0.0.1:11434/v1` |
 | `ollamaModel` | modelo local (nome exato do `ollama list`) | `llama3` |
 | `tts_engine` | motor de voz: `piper` ou `edge` | `piper` |
@@ -294,13 +294,16 @@ Como obter:
 3. copie a chave (começa com `nvapi-`) e cole no JARVIS.
 
 O endpoint usado é `https://integrate.api.nvidia.com/v1/chat/completions` — o mesmo protocolo
-OpenAI do chat completions, com streaming e function calling. Modelos testados nesta ordem,
-com fallback interno:
+OpenAI do chat completions, com streaming e function calling. Modelos testados com a chave, nesta ordem, com fallback interno:
 
-`meta/llama-3.3-70b-instruct` → `openai/gpt-oss-120b` → `meta/llama-3.1-8b-instruct`.
+`nvidia/nemotron-3.5-lightning-30b-a3b` → `nvidia/nemotron-3-ultra-550b-a55b` → `google/gemma-4-31b-it`.
+
+O JARVIS consulta o catálogo (`/v1/models`) e converte um nome de exibição (ex.: "Nemotron 3.5 Bolt E4B")
+para o id real. Modelos descontinuados (como `meta/llama-3.3-70b-instruct`, que volta **410 Gone**)
+são pulados automaticamente.
 
 O modelo precisa aceitar **function calling**, porque é assim que o JARVIS executa as
-ferramentas (comandos, clima, agenda…). Os dois primeiros aceitam; se um modelo escolhido não
+ferramentas (comandos, clima, agenda…). Os três testados aceitam; se um modelo escolhido não
 aceitar, a chamada volta 400 e o JARVIS tenta o próximo da lista.
 
 > A NVIDIA dá uma cota gratuita de testes por conta de desenvolvedor, mas **o texto da
@@ -308,8 +311,8 @@ aceitar, a chamada volta 400 e o JARVIS tenta o próximo da lista.
 > Ollama.
 
 Erros comuns: **HTTP 401/403** = chave errada, expirada ou de outra conta (confira em
-`build.nvidia.com/settings`); **HTTP 404** no modelo = id fora do catálogo (troque no campo
-**Modelo** ou deixe vazio para usar a lista testada); **HTTP 429** = cota/limite de requisições
+`build.nvidia.com/settings`); **HTTP 404/410** no modelo = id fora do catálogo ou descontinuado (o JARVIS pula para o próximo;
+ajuste o campo **Modelo** ou deixe vazio para usar a lista testada); **HTTP 429** = cota/limite de requisições
 atingido — espere um pouco ou troque de provedor.
 
 **Também vale editar o `config.json` direto:**
@@ -1276,6 +1279,24 @@ path traversal (`../../fora` fica contida no vault), journal e página do Logseq
    isso, salvar as configurações apagaria as credenciais já cadastradas.
 4. **Privacidade** — escopo de leitura no Gmail (`gmail.readonly`, sem envio/exclusão), Client
    Secret mascarado em `/api/config/masked` e nenhum token devolvido ao HUD.
+
+## Mudanças recentes (v1.0.25)
+
+### NVIDIA NIM e Ollama
+
+- **404 no modelo da NVIDIA corrigido**: o campo "Modelo" podia ter o nome de exibição
+  ("Nemotron 3.5 Bolt E4B") em vez do id. Agora o JARVIS resolve o nome para o id do catálogo;
+  um id que não existe mais é descartado e a lista testada assume;
+- **410 Gone** (`meta/llama-3.3-70b-instruct` descontinuado) agora passa para o próximo modelo
+  em vez de parar; só 401/403 são tratados como erro fatal de chave;
+- padrões NVIDIA atualizados para `nvidia/nemotron-3.5-lightning-30b-a3b`,
+  `nvidia/nemotron-3-ultra-550b-a55b` e `google/gemma-4-31b-it` (testados com a chave, com tools);
+- **Ollama "não responde"**: quase sempre o servidor não está rodando. Antes de usar, abra o
+  Ollama (ou rode `ollama serve`) e confira `http://127.0.0.1:11434/api/tags`.
+
+### Versão
+
+`v1.0.25` — instalador `JARVIS-Setup.exe` regerado com as correções acima.
 
 ## Mudanças recentes (v1.0.21)
 

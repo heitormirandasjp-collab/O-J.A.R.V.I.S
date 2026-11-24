@@ -42,10 +42,68 @@ OLLAMA_MODEL = "llama3"
 # A lista abaixo é a ordem de fallback: o primeiro modelo que responder bem atende o chat.
 NVIDIA_URL = "https://integrate.api.nvidia.com/v1"
 NVIDIA_MODELS = [
-    "meta/llama-3.3-70b-instruct",   # aceita function calling
-    "openai/gpt-oss-120b",           # aceita function calling
-    "meta/llama-3.1-8b-instruct",    # reserva leve
+    "nvidia/nemotron-3.5-lightning-30b-a3b",  # aceita function calling (testado)
+    "nvidia/nemotron-3-ultra-550b-a55b",      # aceita function calling (testado)
+    "google/gemma-4-31b-it",                  # reserva (testado)
 ]
+
+# Catálogo vivo da NVIDIA (/models): usado para transformar um nome de exibição
+# ("Nemotron 3.5 Bolt E4B") no id real ("nvidia/nemotron-3.5-bolt-e4b") e para
+# detectar id fora do catálogo. Cache curto — não bate na API a cada mensagem.
+_NVIDIA_CATALOG: dict[str, Any] = {"key": "", "ts": 0.0, "ids": []}
+
+
+def _slug_model(value: Any) -> str:
+    """Compara nomes "humanos" com ids do catálogo: sem acento, minúsculo, hífen."""
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+
+
+def nvidia_catalog_ids(api_key: str) -> list[str]:
+    """Ids de chat do catálogo NIM (cache de 10 min); lista vazia se a API falhar."""
+    now = time.time()
+    if _NVIDIA_CATALOG["key"] == api_key and now - float(_NVIDIA_CATALOG["ts"]) < 600:
+        return list(_NVIDIA_CATALOG["ids"])
+    ids: list[str] = []
+    try:
+        r = requests.get(
+            NVIDIA_URL + "/models",
+            headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+            timeout=(10, 20),
+        )
+        if r.status_code == 200:
+            ids = [str(m.get("id") or "") for m in (r.json().get("data") or []) if isinstance(m, dict)]
+            ids = [m for m in ids if m]
+    except Exception:  # noqa: BLE001
+        ids = []
+    if ids:
+        _NVIDIA_CATALOG.update({"key": api_key, "ts": now, "ids": ids})
+    return ids
+
+
+def nvidia_resolve_model(value: Any, api_key: str) -> str:
+    """Aceita id do catálogo ou nome de exibição; devolve "" se não existir mais.
+
+    O campo "Modelo" do HUD é livre, então é comum colar o nome que o site da NVIDIA
+    mostra ("Nemotron 3.5 Bolt E4B"). Esse texto não é um id e a API responde 404 —
+    aqui ele é convertido para o id correspondente antes da chamada.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    ids = nvidia_catalog_ids(api_key)
+    if not ids:
+        return clamp_model_name(raw)  # sem catálogo (offline): mantém o que foi digitado
+    if raw in ids:
+        return raw
+    target = _slug_model(raw)
+    for model_id in ids:
+        short = model_id.split("/", 1)[-1]
+        for candidate in (_slug_model(model_id), _slug_model(short)):
+            if candidate == target or candidate.endswith("-" + target) or target.endswith("-" + candidate):
+                return model_id
+    return ""
 
 # System prompt (personalidade): fonte única em system_prompt.txt — o MESMO arquivo é
 # lido pelo server.js. Abaixo vêm as regras operacionais (ferramentas, anti-alucinação,
@@ -406,12 +464,17 @@ def resolve_provider(cfg: dict[str, Any]) -> AIProvider:
     chosen = clamp_provider(cfg.get("provider"))
     if chosen == "nvidia":
         # a chave da NVIDIA NIM fica só no header: nunca é logada nem devolvida ao HUD
-        model = clamp_model_name(cfg.get("nvidiaModel"))
+        key = str(cfg.get("nvidiaKey") or "")
+        model = nvidia_resolve_model(cfg.get("nvidiaModel"), key)
+        # o modelo escolhido vem primeiro; os padrões ficam de reserva, para que um
+        # id descontinuado (HTTP 410) não derrube o chat inteiro.
+        models = [model] if model else []
+        models += [m for m in NVIDIA_MODELS if m not in models]
         return AIProvider(
             name="nvidia",
             base_url=NVIDIA_URL,
-            api_key=str(cfg.get("nvidiaKey") or ""),
-            models=[model] if model else list(NVIDIA_MODELS),
+            api_key=key,
+            models=models,
         )
     if chosen == "ollama":
         return AIProvider(
