@@ -4,7 +4,7 @@
 ; Gera: dist-installer/JARVIS-Setup.exe
 ; ═══════════════════════════════════════════════════════════════
 #define MyAppName "JARVIS"
-#define MyAppVersion "1.0.27"
+#define MyAppVersion "1.0.28"
 #define MyAppPublisher "Comandante"
 #define MyAppURL "https://github.com/openjarvis"
 #define MyAppExeName "JARVIS.exe"

@@ -1288,6 +1288,14 @@ path traversal (`../../fora` fica contida no vault), journal e página do Logseq
 4. **Privacidade** — escopo de leitura no Gmail (`gmail.readonly`, sem envio/exclusão), Client
    Secret mascarado em `/api/config/masked` e nenhum token devolvido ao HUD.
 
+## Mudanças recentes (v1.0.28)
+
+- **README revisado**: a árvore de **Arquivos** agora lista os arquivos reais do projeto
+  (`JARVIS.spec`, `installer.iss`, `memory.py`, `experiments/`, `start-*.bat`,
+  `config.json.example`) e descreve `config.json` como o arquivo com todas as configurações.
+- **Requisitos**: o hardware mínimo deixou de ser TODO e passou a dizer que ainda não foi medido.
+- **Versão**: `installer.iss` em 1.0.28. Nenhuma mudança de código em relação à 1.0.27.
+
 ## Mudanças recentes (v1.0.27)
 
 - **Interface redesenhada (visual)**: rótulos de voz e metadados das mensagens deixaram de usar
