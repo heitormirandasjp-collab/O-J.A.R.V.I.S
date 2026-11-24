@@ -50,7 +50,8 @@ próprio, sem backend remoto.
 - Python **3.10+** (testado em 3.12)
 - Node.js **18+** (testado com 20+ — só é necessário para `server.js` e para o app Electron)
 - No modo `.exe` (`dist/JARVIS/JARVIS.exe`): nada além dos arquivos gerados
-<!-- TODO: requisitos mínimos de hardware (RAM/disco) ainda não medidos -->
+- Hardware mínimo (RAM/disco) não foi medido. O Piper e o Ollama pesam mais que o resto;
+  os modelos de voz têm ~63 MB cada e os modelos do Ollama são de vários GB.
 
 ## Instalação
 
@@ -197,19 +198,26 @@ Este projeto está licenciado sob a licença MIT — veja o arquivo [LICENSE](LI
 ```
 jarvis/
 ├── launcher.py            # inicializador do app (vira JARVIS.exe)
+├── JARVIS.spec            # configuração do PyInstaller (gera dist/JARVIS/)
+├── installer.iss          # script do instalador (Inno Setup)
 ├── app.py                 # interface + chat + agente (porta 8755)
 ├── server.js              # alternativa em Node do app.py (porta 8755)
 ├── public/                # HUD (HTML/CSS/JS, sem build)
 ├── backend/
 │   ├── main.py            # ferramentas + voz (porta 8000)
+│   ├── memory.py          # memória persistente (chroma_db)
 │   ├── requirements.txt
 │   └── venv/
 ├── electron/              # app desktop (Electron) — janela própria 1280×800
 │   ├── main.js            # cria a janela, sobe os dois serviços e encerra tudo
 │   ├── preload.js         # ponte segura (só minimizar/maximizar/fechar)
 │   └── icon.png           # ícone do JARVIS
-├── voices/                # vozes baixadas (faber/cadu, 60 MB cada)
-├── config.json            # chave da Groq (só neste computador)
+├── experiments/           # protótipo de laboratório (ar_test.html e modelos 3D)
+├── voices/                # vozes Piper (.onnx + .onnx.json, ~63 MB cada)
+├── start-backend.bat      # sobe o backend (porta 8000)
+├── start-server.bat       # sobe o servidor da UI em Node (porta 8755)
+├── config.json.example    # modelo de configuração (copie para config.json)
+├── config.json            # suas configurações e chaves (só neste computador)
 ├── agenda.json            # lembretes/agenda (criado no primeiro uso)
 └── google_token.json      # tokens do Google (0600; criado ao conectar — nunca commitar)
 ```
