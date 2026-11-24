@@ -33,5 +33,3 @@ config.json
 # Tokens do Google (OAuth) — nunca commitar
 google_token.json
 
-# Token do TickTick (OAuth) — nunca commitar
-ticktick_token.json

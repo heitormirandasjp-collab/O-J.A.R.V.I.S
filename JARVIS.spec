@@ -49,7 +49,7 @@ for _stem in _BUNDLED_VOICES:
 # qualquer *.env e os logs/histórico locais ficam de fora mesmo que um add-data
 # de pasta inteira os puxe. Quem instalar cria o próprio config.json a partir
 # do config.json.example.
-_SENSITIVE_NAMES = {'config.json', 'security.log', 'exec_history.json', 'google_token.json', 'ticktick_token.json'}
+_SENSITIVE_NAMES = {'config.json', 'security.log', 'exec_history.json', 'google_token.json'}
 
 
 def _is_sensitive(src):

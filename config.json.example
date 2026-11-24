@@ -17,11 +17,6 @@
   "googleClientSecret": "",
   "googleTimezone": "America/Sao_Paulo",
   "googleRedirectPort": 8899,
-  "todoistToken": "",
-  "tickTickClientId": "",
-  "tickTickClientSecret": "",
-  "notionToken": "",
-  "notionParentPage": "",
   "obsidianVault": "",
   "logseqGraph": ""
 }

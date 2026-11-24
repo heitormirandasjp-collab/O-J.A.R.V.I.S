@@ -485,11 +485,6 @@ def load_config() -> dict[str, Any]:
         # conectores de tarefas/notas (o backend lê daqui na hora de chamar a API).
         # Mesma regra do Google: se o load_config não reconstruir a chave, o próximo
         # "Salvar" nas configurações apagaria o token/segredo já cadastrado.
-        "todoistToken": str(data.get("todoistToken") or "").strip()[:200],
-        "tickTickClientId": str(data.get("tickTickClientId") or "").strip()[:200],
-        "tickTickClientSecret": str(data.get("tickTickClientSecret") or "").strip()[:200],
-        "notionToken": str(data.get("notionToken") or "").strip()[:300],
-        "notionParentPage": str(data.get("notionParentPage") or "").strip()[:200],
         "obsidianVault": str(data.get("obsidianVault") or "").strip()[:500],
         "logseqGraph": str(data.get("logseqGraph") or "").strip()[:500],
     }
@@ -519,11 +514,6 @@ def load_config() -> dict[str, Any]:
                     "googleClientSecret": cfg["googleClientSecret"],
                     "googleTimezone": cfg["googleTimezone"],
                     "googleRedirectPort": cfg["googleRedirectPort"],
-                    "todoistToken": cfg["todoistToken"],
-                    "tickTickClientId": cfg["tickTickClientId"],
-                    "tickTickClientSecret": cfg["tickTickClientSecret"],
-                    "notionToken": cfg["notionToken"],
-                    "notionParentPage": cfg["notionParentPage"],
                     "obsidianVault": cfg["obsidianVault"],
                     "logseqGraph": cfg["logseqGraph"],
                 }
@@ -1611,198 +1601,6 @@ def run_tool(tool: dict[str, Any]) -> dict[str, Any]:
             return {"name": name, "ok": False, "summary": _google_error_summary(r), "detail": r}
         return {"name": name, "ok": True, "summary": f"evento removido da Google Agenda ({r.get('removed')})", "detail": r}
 
-    # ── Todoist ──
-    if name == "todoist-add":
-        content = str(args.get("content") or "").strip()
-        if not content:
-            return {
-                "name": name,
-                "ok": False,
-                "summary": "informe a tarefa (ex.: 'comprar café amanhã às 9h')",
-                "detail": None,
-            }
-        try:
-            prio = max(1, min(int(args.get("priority") or 1), 4))
-        except Exception:  # noqa: BLE001
-            prio = 1
-        r = _backend(
-            "POST",
-            "/todoist/tasks",
-            {
-                "content": content,
-                "description": str(args.get("description") or ""),
-                "due_string": str(args.get("due") or ""),
-                "priority": prio,
-                "project_id": str(args.get("project_id") or ""),
-            },
-            timeout=45,
-        )
-        if r is None:
-            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
-        if not r.get("ok"):
-            return {"name": name, "ok": False, "summary": f"erro: {r.get('error')}", "detail": r}
-        due = str((r.get("task") or {}).get("due") or "")
-        return {
-            "name": name,
-            "ok": True,
-            "summary": f"tarefa criada no Todoist: {content[:140]}" + (f" (para {due})" if due else ""),
-            "detail": r,
-        }
-
-    if name == "todoist-list":
-        try:
-            limit = max(1, min(int(args.get("max") or 10), 30))
-        except Exception:  # noqa: BLE001
-            limit = 10
-        query = str(args.get("q") or "").strip()[:100]
-        path = f"/todoist/tasks?max_results={limit}" + (f"&q={_urlquote(query)}" if query else "")
-        r = _backend("GET", path, timeout=45)
-        if r is None:
-            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
-        if not r.get("ok"):
-            return {"name": name, "ok": False, "summary": f"erro: {r.get('error')}", "detail": r}
-        parts = []
-        for t in (r.get("tasks") or [])[:limit]:
-            extra = ""
-            if t.get("due"):
-                extra += f" ({t['due']})"
-            if t.get("project"):
-                extra += f" [{t['project']}]"
-            if int(t.get("priority") or 1) > 1:
-                extra += " " + "!" * int(t["priority"])
-            parts.append(f"{t.get('content')}{extra} (id {t.get('id')})")
-        return {
-            "name": name,
-            "ok": True,
-            "summary": " | ".join(parts) if parts else "nenhuma tarefa aberta no Todoist",
-            "detail": r,
-        }
-
-    if name == "todoist-done":
-        tid = str(args.get("id") or "").strip()
-        if not tid:
-            return {"name": name, "ok": False, "summary": "informe o id da tarefa (pegue em todoist_list)", "detail": None}
-        r = _backend("POST", f"/todoist/tasks/{_urlquote(tid)}/close", {}, timeout=45)
-        if r is None:
-            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
-        if not r.get("ok"):
-            return {"name": name, "ok": False, "summary": f"erro: {r.get('error')}", "detail": r}
-        return {"name": name, "ok": True, "summary": f"tarefa {r.get('closed')} concluída no Todoist", "detail": r}
-
-    # ── TickTick ──
-    if name == "ticktick-add":
-        title = str(args.get("title") or "").strip()
-        if not title:
-            return {"name": name, "ok": False, "summary": "informe o título da tarefa", "detail": None}
-        try:
-            prio = max(0, min(int(args.get("priority") or 0), 5))
-        except Exception:  # noqa: BLE001
-            prio = 0
-        r = _backend(
-            "POST",
-            "/ticktick/tasks",
-            {
-                "title": title,
-                "content": str(args.get("content") or ""),
-                "due_date": str(args.get("due") or ""),
-                "priority": prio,
-                "project_id": str(args.get("project_id") or ""),
-            },
-            timeout=45,
-        )
-        if r is None:
-            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
-        if not r.get("ok"):
-            return {"name": name, "ok": False, "summary": f"erro: {r.get('error')}", "detail": r}
-        due = str((r.get("task") or {}).get("due") or "")
-        return {
-            "name": name,
-            "ok": True,
-            "summary": f"tarefa criada no TickTick: {title[:140]}" + (f" (para {due[:16]})" if due else ""),
-            "detail": r,
-        }
-
-    if name == "ticktick-list":
-        try:
-            limit = max(1, min(int(args.get("max") or 10), 30))
-        except Exception:  # noqa: BLE001
-            limit = 10
-        query = str(args.get("q") or "").strip()[:100]
-        path = f"/ticktick/tasks?max_results={limit}" + (f"&q={_urlquote(query)}" if query else "")
-        r = _backend("GET", path, timeout=60)
-        if r is None:
-            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
-        if not r.get("ok"):
-            return {"name": name, "ok": False, "summary": f"erro: {r.get('error')}", "detail": r}
-        parts = []
-        for t in (r.get("tasks") or [])[:limit]:
-            extra = ""
-            if t.get("due"):
-                extra += f" ({str(t['due'])[:16]})"
-            if t.get("project"):
-                extra += f" [{t['project']}]"
-            parts.append(f"{t.get('title')}{extra} (id {t.get('id')}, projeto {t.get('project_id')})")
-        return {
-            "name": name,
-            "ok": True,
-            "summary": " | ".join(parts) if parts else "nenhuma tarefa aberta no TickTick",
-            "detail": r,
-        }
-
-    if name == "ticktick-done":
-        tid = str(args.get("id") or "").strip()
-        if not tid:
-            return {"name": name, "ok": False, "summary": "informe o id da tarefa (pegue em ticktick_list)", "detail": None}
-        pid = str(args.get("project_id") or "").strip()
-        path = f"/ticktick/tasks/{_urlquote(tid)}/complete" + (f"?project_id={_urlquote(pid)}" if pid else "")
-        r = _backend("POST", path, {}, timeout=60)
-        if r is None:
-            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
-        if not r.get("ok"):
-            return {"name": name, "ok": False, "summary": f"erro: {r.get('error')}", "detail": r}
-        return {"name": name, "ok": True, "summary": f"tarefa {r.get('completed')} concluída no TickTick", "detail": r}
-
-    # ── Notion ──
-    if name == "notion-add":
-        title = str(args.get("title") or "").strip()
-        if not title:
-            return {"name": name, "ok": False, "summary": "informe o título da nota", "detail": None}
-        r = _backend(
-            "POST",
-            "/notion/pages",
-            {
-                "title": title,
-                "content": str(args.get("content") or ""),
-                "database_id": str(args.get("database_id") or ""),
-            },
-            timeout=45,
-        )
-        if r is None:
-            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
-        if not r.get("ok"):
-            return {"name": name, "ok": False, "summary": f"erro: {r.get('error')}", "detail": r}
-        return {"name": name, "ok": True, "summary": f"nota '{title[:120]}' criada no Notion", "detail": r}
-
-    if name == "notion-search":
-        try:
-            limit = max(1, min(int(args.get("max") or 10), 30))
-        except Exception:  # noqa: BLE001
-            limit = 10
-        query = str(args.get("q") or "").strip()[:100]
-        path = f"/notion/search?max_results={limit}" + (f"&q={_urlquote(query)}" if query else "")
-        r = _backend("GET", path, timeout=45)
-        if r is None:
-            return {"name": name, "ok": False, "summary": "backend local (porta 8000) fora do ar", "detail": None}
-        if not r.get("ok"):
-            return {"name": name, "ok": False, "summary": f"erro: {r.get('error')}", "detail": r}
-        parts = [f"{i.get('title')} (id {i.get('id')})" for i in (r.get("results") or [])[:limit]]
-        return {
-            "name": name,
-            "ok": True,
-            "summary": " | ".join(parts) if parts else "nada encontrado no Notion para essa busca",
-            "detail": r,
-        }
-
     # ── Obsidian (pasta local do vault) ──
     if name == "obsidian-add":
         title = str(args.get("title") or "").strip()
@@ -1904,15 +1702,7 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     {"type": "function", "function": {"name": "calendar_list", "description": "Lista os eventos da Google Agenda do Comandante nos próximos dias (para saber a agenda real antes de marcar algo).", "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "janela em dias (1-90, padrão 7)"}, "q": {"type": "string", "description": "filtro por texto (opcional)"}}}}},
     {"type": "function", "function": {"name": "calendar_add", "description": "Cria um evento/reunião na Google Agenda do Comandante.", "parameters": {"type": "object", "properties": {"summary": {"type": "string", "description": "título do evento"}, "start": {"type": "string", "description": "AAAA-MM-DD HH:MM (ou DD/MM/AAAA HH:MM)"}, "duration_min": {"type": "integer", "description": "duração em minutos (padrão 60)"}, "description": {"type": "string"}, "location": {"type": "string"}}, "required": ["summary", "start"]}}},
     {"type": "function", "function": {"name": "calendar_delete", "description": "Remove um evento da Google Agenda pelo id retornado em calendar_list.", "parameters": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}},
-    # ── conectores de tarefas e notas (Todoist, TickTick, Notion, Obsidian, Logseq) ──
-    {"type": "function", "function": {"name": "todoist_add", "description": "Cria uma tarefa no Todoist do Comandante. Use quando ele disser 'coloca na minha lista', 'anota no Todoist', 'cria uma tarefa'. due aceita o texto do Todoist ('hoje', 'amanhã 9h', 'sexta').", "parameters": {"type": "object", "properties": {"content": {"type": "string", "description": "o que fazer"}, "due": {"type": "string", "description": "quando (texto natural, opcional)"}, "priority": {"type": "integer", "description": "1 normal (padrão), 2 média, 3 alta, 4 urgente"}, "description": {"type": "string", "description": "detalhes (opcional)"}, "project_id": {"type": "string", "description": "id do projeto, vindo de todoist_list (opcional)"}}, "required": ["content"]}}},
-    {"type": "function", "function": {"name": "todoist_list", "description": "Lista as tarefas abertas do Todoist. Use para mostrar o que o Comandante tem para fazer.", "parameters": {"type": "object", "properties": {"q": {"type": "string", "description": "filtra por palavra (opcional)"}, "max": {"type": "integer", "description": "quantidade (1-30, padrão 10)"}}}}},
-    {"type": "function", "function": {"name": "todoist_done", "description": "Conclui uma tarefa do Todoist pelo id retornado em todoist_list.", "parameters": {"type": "object", "properties": {"id": {"type": "string", "description": "id da tarefa"}}, "required": ["id"]}}},
-    {"type": "function", "function": {"name": "ticktick_add", "description": "Cria uma tarefa no TickTick do Comandante. Use quando ele pedir a lista do TickTick. due aceita 'AAAA-MM-DD' ou 'AAAA-MM-DD HH:MM'.", "parameters": {"type": "object", "properties": {"title": {"type": "string", "description": "título da tarefa"}, "due": {"type": "string", "description": "data/hora (opcional)"}, "content": {"type": "string", "description": "detalhes (opcional)"}, "priority": {"type": "integer", "description": "0 nenhuma (padrão), 1 baixa, 3 média, 5 alta"}, "project_id": {"type": "string", "description": "id do projeto, vindo de ticktick_list (opcional)"}}, "required": ["title"]}}},
-    {"type": "function", "function": {"name": "ticktick_list", "description": "Lista as tarefas abertas do TickTick (varre os projetos do Comandante).", "parameters": {"type": "object", "properties": {"q": {"type": "string", "description": "filtra por palavra (opcional)"}, "max": {"type": "integer", "description": "quantidade (1-30, padrão 10)"}}}}},
-    {"type": "function", "function": {"name": "ticktick_done", "description": "Conclui uma tarefa do TickTick pelo id retornado em ticktick_list.", "parameters": {"type": "object", "properties": {"id": {"type": "string", "description": "id da tarefa"}, "project_id": {"type": "string", "description": "id do projeto da tarefa (ajuda a API)"}}, "required": ["id"]}}},
-    {"type": "function", "function": {"name": "notion_add", "description": "Cria uma nota/página no Notion do Comandante (na página configurada ou num banco). Use para 'guarda isso no Notion', 'cria uma nota'.", "parameters": {"type": "object", "properties": {"title": {"type": "string", "description": "título da nota"}, "content": {"type": "string", "description": "texto da nota"}, "database_id": {"type": "string", "description": "id do banco (opcional; sem ele usa a página configurada)"}}, "required": ["title"]}}},
-    {"type": "function", "function": {"name": "notion_search", "description": "Procura páginas e bancos no Notion do Comandante.", "parameters": {"type": "object", "properties": {"q": {"type": "string", "description": "texto buscado"}, "max": {"type": "integer", "description": "quantidade (1-30, padrão 10)"}}}}},
+    # ── conectores de notas (Obsidian, Logseq) ──
     {"type": "function", "function": {"name": "obsidian_add", "description": "Cria ou acrescenta conteúdo numa nota do vault do Obsidian (arquivo .md no computador).", "parameters": {"type": "object", "properties": {"title": {"type": "string", "description": "título/nome da nota"}, "content": {"type": "string", "description": "texto a gravar"}, "folder": {"type": "string", "description": "subpasta dentro do vault (opcional)"}}, "required": ["title", "content"]}}},
     {"type": "function", "function": {"name": "obsidian_search", "description": "Procura nas notas do vault do Obsidian (pelo nome ou pelo conteúdo).", "parameters": {"type": "object", "properties": {"q": {"type": "string", "description": "texto buscado"}, "max": {"type": "integer", "description": "quantidade (1-20, padrão 8)"}}}}},
     {"type": "function", "function": {"name": "logseq_add", "description": "Anota um bloco no journal de hoje do Logseq.", "parameters": {"type": "object", "properties": {"content": {"type": "string", "description": "o que anotar"}}, "required": ["content"]}}},
@@ -1929,11 +1719,7 @@ TOOL_ALIASES = {
     "gmail_list": "gmail-list", "gmail_read": "gmail-read",
     "calendar_list": "calendar-list", "calendar_add": "calendar-add",
     "calendar_delete": "calendar-delete",
-    # conectores de tarefas e notas (Todoist, TickTick, Notion, Obsidian, Logseq)
-    "todoist_add": "todoist-add", "todoist_list": "todoist-list", "todoist_done": "todoist-done",
-    "ticktick_add": "ticktick-add", "ticktick_list": "ticktick-list",
-    "ticktick_done": "ticktick-done",
-    "notion_add": "notion-add", "notion_search": "notion-search",
+    # conectores de notas (Obsidian, Logseq)
     "obsidian_add": "obsidian-add", "obsidian_search": "obsidian-search",
     "logseq_add": "logseq-add", "logseq_search": "logseq-search",
 }
@@ -2755,12 +2541,7 @@ async def api_config_masked() -> JSONResponse:
             "googleClientSecret": mask(cfg["googleClientSecret"]),
             "googleTimezone": cfg["googleTimezone"],
             "googleRedirectPort": cfg["googleRedirectPort"],
-            # conectores: token/segredo só mascarados; pastas e ids aparecem inteiros
-            "todoistToken": mask(cfg["todoistToken"]),
-            "tickTickClientId": cfg["tickTickClientId"],
-            "tickTickClientSecret": mask(cfg["tickTickClientSecret"]),
-            "notionToken": mask(cfg["notionToken"]),
-            "notionParentPage": cfg["notionParentPage"],
+            # conectores: pastas aparecem inteiras
             "obsidianVault": cfg["obsidianVault"],
             "logseqGraph": cfg["logseqGraph"],
         }
@@ -2815,23 +2596,8 @@ async def api_config_post(request: Request) -> JSONResponse:
             cfg["googleRedirectPort"] = max(1024, min(int(body["googleRedirectPort"]), 65535))
         except Exception:  # noqa: BLE001
             pass
-    # ── Conectores: Todoist, TickTick, Notion, Obsidian e Logseq ──
-    # Mesma regra do Google: placeholder mascarado nunca sobrescreve o segredo real.
+    # ── Conectores: Obsidian e Logseq ──
     for chave, limite in (
-        ("todoistToken", 200),
-        ("tickTickClientSecret", 200),
-        ("notionToken", 300),
-    ):
-        valor = body.get(chave)
-        if isinstance(valor, str):
-            limpo = valor.strip()
-            if _looks_masked(limpo):
-                security_log("config", f"tentativa de gravar {chave} mascarado", blocked=True)
-            else:
-                cfg[chave] = limpo[:limite]
-    for chave, limite in (
-        ("tickTickClientId", 200),
-        ("notionParentPage", 200),
         ("obsidianVault", 500),
         ("logseqGraph", 500),
     ):
@@ -2862,8 +2628,6 @@ async def api_config_post(request: Request) -> JSONResponse:
             "googleClientId": cfg["googleClientId"],
             "googleTimezone": cfg["googleTimezone"],
             "googleRedirectPort": cfg["googleRedirectPort"],
-            "todoistToken": mask(cfg["todoistToken"]),
-            "notionToken": mask(cfg["notionToken"]),
             "obsidianVault": cfg["obsidianVault"],
             "logseqGraph": cfg["logseqGraph"],
         }

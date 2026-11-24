@@ -289,31 +289,6 @@
           <p class="hint dim" id="googleMsg"></p>
         </div>
         <div class="google-box">
-          <div class="g-status"><span class="dot" id="tdDot"></span> Todoist: <b id="tdState">verificando…</b></div>
-          <p class="hint dim">Tarefas de verdade: diga “adiciona uma tarefa comprar café amanhã”. Crie o token em
-            <code>todoist.com/app/settings/integrations/developer</code> e cole abaixo.</p>
-          <label>Todoist API token<input id="setTodoistToken" type="password" placeholder="deixe em branco para manter o atual" autocomplete="off" /></label>
-        </div>
-        <div class="google-box">
-          <div class="g-status"><span class="dot" id="ttDot"></span> TickTick: <b id="ttState">verificando…</b></div>
-          <p class="hint dim">Crie um app em <code>developer.ticktick.com</code> e cadastre o Redirect URL
-            <code>http://localhost:8000/ticktick/callback</code>. Depois de colar as credenciais, clique em Conectar.</p>
-          <label>TickTick Client ID<input id="setTickTickId" type="text" placeholder="client id do app" autocomplete="off" /></label>
-          <label>TickTick Client Secret<input id="setTickTickSecret" type="password" placeholder="deixe em branco para manter o atual" autocomplete="off" /></label>
-          <div class="modal-actions">
-            <button type="button" class="ghost-btn" id="tickTickConnect">Conectar TickTick</button>
-            <button type="button" class="ghost-btn" id="tickTickDisconnect">Desconectar</button>
-          </div>
-          <p class="hint dim" id="tickTickMsg"></p>
-        </div>
-        <div class="google-box">
-          <div class="g-status"><span class="dot" id="nDot"></span> Notion: <b id="nState">verificando…</b></div>
-          <p class="hint dim">Crie uma integração em <code>notion.so/my-integrations</code>, dê acesso à página ou ao banco
-            e cole o token. O pai é opcional: sem ele, o JARVIS usa a primeira página/banco que a integração enxergar.</p>
-          <label>Notion token<input id="setNotionToken" type="password" placeholder="deixe em branco para manter o atual" autocomplete="off" /></label>
-          <label>Notion página/banco pai (opcional)<input id="setNotionParent" type="text" placeholder="id da página ou do banco de dados" autocomplete="off" /></label>
-        </div>
-        <div class="google-box">
           <div class="g-status"><span class="dot" id="oDot"></span> Obsidian: <b id="oState">verificando…</b></div>
           <div class="g-status"><span class="dot" id="lDot"></span> Logseq: <b id="lState">verificando…</b></div>
           <p class="hint dim">Obsidian e Logseq são locais — não precisa de conta. Informe a pasta do vault e a pasta do grafo;

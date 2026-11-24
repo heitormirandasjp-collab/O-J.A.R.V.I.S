@@ -102,11 +102,6 @@ Tudo fica em **`config.json`**, na raiz do projeto (no `.exe`, em
 | `googleClientSecret` | Client Secret do mesmo cliente OAuth — **segredo**, nunca vai para o HUD mascarado | vazio |
 | `googleTimezone` | fuso usado ao criar eventos na Google Agenda | `America/Sao_Paulo` |
 | `googleRedirectPort` | porta local que recebe o retorno da autorização do Google | `8899` |
-| `todoistToken` | API token pessoal do Todoist — **segredo** | vazio = Todoist desligado |
-| `tickTickClientId` | Client ID do app criado em `developer.ticktick.com` | vazio = TickTick desligado |
-| `tickTickClientSecret` | Client Secret do mesmo app — **segredo** | vazio |
-| `notionToken` | token da integração interna do Notion (**segredo**); a integração precisa ter acesso à página/banco | vazio = Notion desligado |
-| `notionParentPage` | id da página ou do banco de dados onde as notas são criadas | vazio = primeira página/banco visível |
 | `obsidianVault` | pasta do vault do Obsidian (só se grava `.md` dentro dela) | vazio = Obsidian desligado |
 | `logseqGraph` | pasta do grafo do Logseq (usa `journals/` e `pages/`) | vazio = Logseq desligado |
 | `continuous_listen_minutes` | minutos de escuta contínua após o wake word (`0` = infinito) | `5` |
@@ -664,21 +659,6 @@ Quando o Comandante pede notícias, o JARVIS **não lê os títulos crus** — e
 | `GET /calendar/events?days=7&max_results=10&q=` | eventos da **Google Agenda** na janela pedida |
 | `POST /calendar/events` | `{ "summary", "start", "end"\|"duration_min", "description", "location" }` |
 | `DELETE /calendar/events/{id}` | remove um evento da Google Agenda |
-| `GET /todoist/status` | se o token do Todoist está configurado |
-| `GET /todoist/tasks?max_results=15&project_id=&q=` | tarefas abertas (prazo, projeto e prioridade) |
-| `POST /todoist/tasks` | `{ "content", "description", "due_string", "priority", "project_id" }` |
-| `POST /todoist/tasks/{id}/close` | conclui a tarefa (**204** na API do Todoist) |
-| `GET /todoist/projects` | projetos (id + nome) para escolher onde criar |
-| `GET /ticktick/status` | conexão, etapa do OAuth e o **Redirect URL** que precisa estar cadastrado |
-| `POST /ticktick/connect` | devolve a URL de autorização (`tasks:read tasks:write`) |
-| `GET /ticktick/callback` | recebe o `code`, troca por token e mostra a página de retorno |
-| `POST /ticktick/disconnect` | apaga o `ticktick_token.json` |
-| `GET /ticktick/projects` · `GET /ticktick/tasks?max_results=15&project_id=&q=` | listas e tarefas abertas |
-| `POST /ticktick/tasks` | `{ "title", "content", "due_date", "priority", "project_id" }` |
-| `POST /ticktick/tasks/{id}/complete?project_id=` | conclui a tarefa |
-| `GET /notion/status` | token e se há página/banco pai fixo |
-| `POST /notion/pages` | `{ "title", "content", "database_id", "parent_page_id" }` |
-| `GET /notion/search?q=&max_results=10` | procura páginas e bancos visíveis para a integração |
 | `GET /obsidian/status` | pasta do vault, se é válida e quantas notas existem |
 | `POST /obsidian/notes` | `{ "title", "content", "folder" }` → grava/anexa `.md` no vault |
 | `GET /obsidian/notes?q=&max_results=10` | busca por texto nas notas |
@@ -1243,52 +1223,23 @@ o Client Secret e `POST /google/disconnect`. **Não** foi possível validar a le
 nem a criação de eventos sem uma conta Google autorizada — o fluxo completo depende do passo
 “Conectar Google” com credenciais reais.
 
-## Tarefas e notas — Todoist, TickTick, Notion, Obsidian e Logseq (v1.0.23)
+## Notas — Obsidian e Logseq (v1.0.23)
 
-Destinos de "anota isso para mim" controlados por voz. **Google Keep ficou de fora**: a API dele
-só existe para contas Google Workspace administradas — uma conta Gmail comum não consegue
-autorizar. O JARVIS não finge: se o Comandante pedir Keep, ele explica em uma frase e oferece
-Notion, Obsidian ou Logseq.
+Destinos de "anota isso para mim" controlados por voz, tudo local e sem conta. **Google Keep ficou de
+fora**: a API dele só existe para contas Google Workspace administradas — uma conta Gmail comum não
+consegue autorizar. O JARVIS não finge: se o Comandante pedir Keep, ele explica em uma frase e oferece
+Obsidian ou Logseq.
 
 ### Ferramentas do agente
 
 | Fala | Ferramenta | O que acontece |
 |---|---|---|
-| "adiciona uma tarefa comprar café amanhã" | `todoist_add` / `ticktick_add` | cria a tarefa no serviço configurado |
-| "o que eu tenho para hoje?" | `todoist_list` / `ticktick_list` | lista as tarefas abertas com prazo e projeto |
-| "conclui a tarefa 123" | `todoist_done` / `ticktick_done` | fecha pelo id que veio da listagem |
-| "anota no Notion que..." | `notion_add` | cria página no banco/página configurado |
-| "procura no Notion por orçamento" | `notion_search` | busca páginas e bancos |
 | "grava uma nota no Obsidian" | `obsidian_add` | grava/anexa um `.md` dentro do vault |
 | "procura no meu vault por reunião" | `obsidian_search` | busca texto nas notas |
 | "anota no journal do Logseq" | `logseq_add` | bloco no journal do dia (ou em `page`) |
 | "procura no Logseq por projeto" | `logseq_search` | busca texto nas páginas do grafo |
 
-### Como conectar
-
-**Todoist (token)**
-
-1. <https://todoist.com/app/settings/integrations/developer> → **API token**.
-2. ⚙ → bloco **Todoist** → cole o token → **Salvar**.
-
-**TickTick (OAuth)**
-
-1. <https://developer.ticktick.com> → **Manage Apps** → **New App**.
-2. Cadastre o **Redirect URL** exatamente `http://localhost:8000/ticktick/callback` (é o valor que
-   o `GET /ticktick/status` devolve; pode ser trocado com a variável `JARVIS_TICKTICK_REDIRECT`).
-3. ⚙ → bloco **TickTick** → Client ID + Client Secret → **Conectar TickTick** → autorize na aba
-   que abrir. O token fica em `ticktick_token.json` (**0600**, fora do build) e expira: quando
-   expirar, basta **Reconectar**.
-
-**Notion (token de integração)**
-
-1. <https://www.notion.so/my-integrations> → **New integration** → copie o **Internal Integration
-   Secret**.
-2. Na página/banco desejado: **⋯ → Connections →** adicione a integração (sem isso o Notion devolve
-   404).
-3. ⚙ → bloco **Notion** → cole o token; opcionalmente o **id da página/banco pai** → **Salvar**.
-
-**Obsidian e Logseq (locais, sem conta)**
+### Como configurar
 
 - **Obsidian**: ⚙ → **Pasta do vault Obsidian** (ex.: `C:\Users\voce\Documents\MeuVault`) → **Salvar**.
 - **Logseq**: ⚙ → **Pasta do grafo Logseq** (ex.: `C:\Users\voce\Documents\notes`) → **Salvar**.
@@ -1298,43 +1249,13 @@ Notion, Obsidian ou Logseq.
 
 ### Detalhes técnicos
 
-- **Todoist**: REST v1 (`https://api.todoist.com/api/v1`), `Authorization: Bearer`; listagem por
-  cursor e conclusão em `POST /tasks/{id}/close` (**204**);
-- **TickTick**: OAuth em `ticktick.com/oauth/authorize` + `/oauth/token` (Basic auth, form), escopos
-  `tasks:read tasks:write`, API `api.ticktick.com/open/v1`; `POST /project/{id}/data` para as tarefas
-  e status `2` = concluída. O `state` é validado e o fluxo tem trava (`_TICKTICK_FLOW_LOCK`) para o
-  callback e a UI não competirem;
-- **Notion**: `Notion-Version: 2026-03-11`; o `data_source_id` sai de `GET /databases/{id}` e a
-  propriedade `title` é descoberta no schema, então o banco pode ter qualquer nome de coluna;
 - **Obsidian/Logseq**: tudo local, sem rede. `NOTE_MAX_CHARS` limita o texto por nota e a busca é
   por substring (sem índice, com limite de arquivos por consulta);
-- **sem conexão, nada quebra**: cada rota responde **409** com "conecte em Configurações → X" e as
+- **sem configuração, nada quebra**: as rotas respondem **409** com "configure em Configurações" e as
   ferramentas devolvem `ok: false` com a mesma frase.
 
-**Testado localmente**: `GET /…/status` dos cinco (configured/valid/notes/pages), criação e
-anexação de nota no Obsidian em pasta temporária, tentativa de path traversal (`../../fora` fica
-contida no vault), journal e página do Logseq, e busca nos dois. **Não** foi possível testar ao vivo
-Todoist, TickTick e Notion sem tokens/conta reais.
-
-## Mudanças recentes (v1.0.23)
-
-**Todoist, TickTick, Notion, Obsidian e Logseq por voz.**
-
-1. **Doze ferramentas novas** — `todoist_add/list/done`, `ticktick_add/list/done`,
-   `notion_add/search`, `obsidian_add/search`, `logseq_add/search` em `TOOLS_SCHEMA`, `TOOL_ALIASES`
-   e `run_tool`. O prompt ganhou a seção **TAREFAS E NOTAS**: usar a ferramenta certa, confirmar só
-   com o resultado real e nunca inventar id.
-2. **Conectores no backend** — 23 rotas novas em `backend/main.py`, com o helper `_remote_json`
-   transformando rede/401/erro em mensagem em português e OAuth do TickTick com `state` e token em
-   arquivo **0600**.
-3. **Configurações** — quatro blocos novos na engrenagem (Todoist, TickTick, Notion,
-   Obsidian/Logseq) com status ao vivo, **Conectar/Desconectar** do TickTick e a ressalva sobre o
-   Keep. As sete chaves novas entraram em `load_config`, `/api/config/masked` e `POST /api/config`
-   (segredos mascarados: salvar as configurações não apaga o que já está cadastrado).
-4. **Google Keep** — sem conector: API restrita a Google Workspace. O JARVIS responde isso em uma
-   frase e sugere Notion/Obsidian/Logseq.
-5. **Segurança** — `ticktick_token.json` no `.gitignore` e em `_SENSITIVE_NAMES` do `JARVIS.spec`
-   (não vai para o `.exe`); tokens mascarados no HUD; escrita local contida na pasta configurada.
+**Testado localmente**: criação e anexação de nota no Obsidian em pasta temporária, tentativa de
+path traversal (`../../fora` fica contida no vault), journal e página do Logseq, e busca nos dois.
 
 ## Mudanças recentes (v1.0.22)
 
