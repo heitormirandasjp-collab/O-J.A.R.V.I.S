@@ -259,8 +259,83 @@ function loadConfig() {
   );
 }
 
-/** Provedor escolhido: mesma interface para Groq (nuvem) e Ollama (local). */
+/* NVIDIA NIM: mesmo endpoint OpenAI-compatível do app.py; a chave vai só no header. */
+const NVIDIA_URL = 'https://integrate.api.nvidia.com/v1';
+const NVIDIA_MODELS = [
+  'nvidia/nemotron-3.5-lightning-30b-a3b',
+  'nvidia/nemotron-3-ultra-550b-a55b',
+  'google/gemma-4-31b-it',
+];
+
+/** Converte o nome de exibição ("Nemotron 3.5 Bolt E4B") no id do catálogo, quando houver. */
+function nvidiaSlug(v) {
+  return String(v || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function resolveNvidiaModel(raw, key) {
+  const wanted = String(raw || '').trim();
+  if (!wanted) return '';
+  // catálogo indisponível (offline): usa o que foi digitado, como o app.py
+  const ids = nvidiaCatalogCache.ids;
+  if (!ids.length) return wanted.slice(0, 120);
+  if (ids.includes(wanted)) return wanted;
+  const target = nvidiaSlug(wanted);
+  for (const id of ids) {
+    const short = id.split('/').slice(1).join('/') || id;
+    for (const cand of [nvidiaSlug(id), nvidiaSlug(short)]) {
+      if (cand === target || cand.endsWith('-' + target) || target.endsWith('-' + cand)) return id;
+    }
+  }
+  return '';
+}
+
+const nvidiaCatalogCache = { key: '', ts: 0, ids: [] };
+
+/** Carrega o catálogo NIM (cache de 10 min); falha vira lista vazia, sem derrubar o chat. */
+async function loadNvidiaCatalog(key) {
+  const now = Date.now();
+  if (nvidiaCatalogCache.key === key && now - nvidiaCatalogCache.ts < 600000) return;
+  try {
+    const r = await fetch(`${NVIDIA_URL}/models`, {
+      headers: key ? { Authorization: `Bearer ${key}` } : {},
+      signal: AbortSignal.timeout(20000),
+    });
+    if (r.status === 200) {
+      const data = (await r.json()) || {};
+      const ids = (Array.isArray(data.data) ? data.data : []).map((m) => m && m.id).filter(Boolean);
+      if (ids.length) {
+        nvidiaCatalogCache.key = key;
+        nvidiaCatalogCache.ts = now;
+        nvidiaCatalogCache.ids = ids;
+      }
+    }
+  } catch {
+    /* sem catálogo: resolveNvidiaModel usa o nome digitado */
+  }
+}
+
+/** Provedor escolhido: mesma interface para Groq (nuvem), NVIDIA NIM (nuvem) e Ollama (local). */
 function resolveProvider(cfg) {
+  if (clampProvider(cfg.provider) === 'nvidia') {
+    const key = String(cfg.nvidiaKey || '');
+    const model = resolveNvidiaModel(cfg.nvidiaModel, key);
+    const models = model ? [model] : [];
+    for (const m of NVIDIA_MODELS) if (!models.includes(m)) models.push(m);
+    return {
+      name: 'nvidia',
+      label: 'NVIDIA NIM',
+      configured: !!key,
+      baseUrl: NVIDIA_URL,
+      models,
+      url: `${NVIDIA_URL}/chat/completions`,
+      headers: { Authorization: `Bearer ${key}` },
+    };
+  }
   if (clampProvider(cfg.provider) === 'ollama') {
     const base = clampOllamaUrl(cfg.ollamaUrl);
     return {
@@ -1257,7 +1332,7 @@ function buildAttempts(cfg) {
     url: provider.url,
     headers: provider.headers,
     timeout: 30000,
-    fatalStatuses: provider.name === 'groq' ? [401, 403] : [],
+    fatalStatuses: provider.name === 'ollama' ? [] : [401, 403],
   }));
 }
 
@@ -1355,6 +1430,7 @@ async function handleChat(req, res) {
   });
 
   const cfg = loadConfig();
+  if (clampProvider(cfg.provider) === 'nvidia') await loadNvidiaCatalog(String(cfg.nvidiaKey || ''));
   const provider = resolveProvider(cfg);
   const attempts = buildAttempts(cfg);
 

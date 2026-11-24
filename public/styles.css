@@ -295,9 +295,8 @@ body.focus-mode-active .talkbar { opacity: 0; pointer-events: none; }
   padding: 5px 8px 3px;
   font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--faint);
+  letter-spacing: 0.01em;
+  color: var(--dim);
 }
 .voice-head small { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--faint); }
 .chev { color: var(--faint); display: inline-grid; place-items: center; }
@@ -342,7 +341,8 @@ body.focus-mode-active .talkbar { opacity: 0; pointer-events: none; }
     transform var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out),
     border-color var(--t-fast) var(--ease-out),
-    background-color var(--t-fast) var(--ease-out);
+    background-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-slow) var(--ease-out);
 }
 .mic-btn svg { position: relative; z-index: 1; stroke-width: 1.6; }
 .mic-pulse {
@@ -918,9 +918,8 @@ select option { background: var(--surface-2); color: var(--text); }
 }
 .meta {
   margin-top: 4px;
-  font-size: 9.5px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.01em;
   color: var(--faint);
 }
 .typing { display: inline-flex; gap: 4px; padding: 3px 0; }

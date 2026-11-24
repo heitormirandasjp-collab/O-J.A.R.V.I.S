@@ -1280,6 +1280,14 @@ path traversal (`../../fora` fica contida no vault), journal e página do Logseq
 4. **Privacidade** — escopo de leitura no Gmail (`gmail.readonly`, sem envio/exclusão), Client
    Secret mascarado em `/api/config/masked` e nenhum token devolvido ao HUD.
 
+## Mudanças recentes (v1.0.27)
+
+- **Interface redesenhada (visual)**: rótulos de voz e metadados das mensagens deixaram de usar
+  caixa-alta com espaçamento largo, e o botão do microfone ganhou transição de sombra. Layout,
+  cores e comportamento seguem os mesmos.
+
+`v1.0.27` — `JARVIS.exe` e instalador `JARVIS-Setup.exe` regerados.
+
 ## Mudanças recentes (v1.0.26)
 
 - **Salvar NVIDIA não volta mais para Groq**: o `server.js` (alternativa Node, `start-server.bat`)
