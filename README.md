@@ -1280,6 +1280,14 @@ path traversal (`../../fora` fica contida no vault), journal e página do Logseq
 4. **Privacidade** — escopo de leitura no Gmail (`gmail.readonly`, sem envio/exclusão), Client
    Secret mascarado em `/api/config/masked` e nenhum token devolvido ao HUD.
 
+## Mudanças recentes (v1.0.26)
+
+- **Salvar NVIDIA não volta mais para Groq**: o `server.js` (alternativa Node, `start-server.bat`)
+  não reconhecia o provedor `nvidia` e gravava `groq` no lugar. Agora aceita `nvidia`, grava e
+  devolve a chave e o modelo da NVIDIA. (O `.exe` usa o `app.py`, que já funcionava.)
+
+`v1.0.26` — instalador `JARVIS-Setup.exe` regerado.
+
 ## Mudanças recentes (v1.0.25)
 
 ### NVIDIA NIM e Ollama

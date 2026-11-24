@@ -65,7 +65,7 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODELS = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
 
 /* provedores de IA do chat: "groq" (nuvem) ou "ollama" (modelos locais, endpoint OpenAI) */
-const AI_PROVIDERS = ['groq', 'ollama'];
+const AI_PROVIDERS = ['groq', 'nvidia', 'ollama'];
 const OLLAMA_URL = 'http://127.0.0.1:11434/v1';
 const OLLAMA_MODEL = 'llama3';
 
@@ -243,6 +243,8 @@ function loadConfig() {
       provider: 'groq',
       groqKey: '',
       groqModel: '',
+      nvidiaKey: '',
+      nvidiaModel: '',
       ollamaUrl: OLLAMA_URL,
       ollamaModel: '',
       continuous_listen_minutes: 5,
@@ -1621,6 +1623,8 @@ async function handleConfig(req, res) {
         provider: cfg.provider,
         groqKey: cfg.groqKey,
         groqModel: cfg.groqModel,
+        nvidiaKey: cfg.nvidiaKey,
+        nvidiaModel: cfg.nvidiaModel,
         ollamaUrl: cfg.ollamaUrl,
         ollamaModel: cfg.ollamaModel,
         continuous_listen_minutes: cfg.continuous_listen_minutes,
@@ -1647,6 +1651,11 @@ async function handleConfig(req, res) {
       if (!looksMasked(key)) next.groqKey = key;
     }
     if (typeof body.groqModel === 'string') next.groqModel = body.groqModel.trim().slice(0, 120);
+    if (typeof body.nvidiaKey === 'string') {
+      const nkey = body.nvidiaKey.trim();
+      if (!looksMasked(nkey)) next.nvidiaKey = nkey;
+    }
+    if (typeof body.nvidiaModel === 'string') next.nvidiaModel = body.nvidiaModel.trim().slice(0, 120);
     if (body.continuous_listen_minutes !== undefined && body.continuous_listen_minutes !== null) {
       next.continuous_listen_minutes = clampMinutes(body.continuous_listen_minutes);
     }
