@@ -1396,9 +1396,58 @@ def _convert_units(value: Any, src: str, dst: str) -> dict[str, Any]:
     return {"name": name, "ok": False, "summary": f"não sei converter '{src}' para '{dst}' (use unidades do mesmo tipo)", "detail": None}
 
 
+def _web_search(query: str, limit: int = 5) -> list[dict[str, str]]:
+    """Pesquisa na web sem chave: Wikipédia (pt, depois en). Devolve título, link e trecho."""
+    import html as _html
+
+    def clean(s: str) -> str:
+        return re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", "", s or ""))).strip()
+
+    n = max(1, min(int(limit or 5), 8))
+    for lang in ("pt", "en"):
+        try:
+            r = requests.get(
+                f"https://{lang}.wikipedia.org/w/rest.php/v1/search/page",
+                params={"q": query, "limit": n},
+                headers={"User-Agent": "JARVIS/1.0 (assistente local)"},
+                timeout=15,
+            )
+            if r.status_code != 200:
+                continue
+            pages = r.json().get("pages") or []
+        except Exception:  # noqa: BLE001
+            continue
+        out = [
+            {
+                "title": clean(p.get("title", ""))[:200],
+                "url": f"https://{lang}.wikipedia.org/wiki/{p.get('key', '')}"[:300],
+                "snippet": clean(p.get("excerpt", ""))[:400],
+            }
+            for p in pages[:n]
+            if p.get("key")
+        ]
+        if out:
+            return out
+    return []
+
+
 def run_tool(tool: dict[str, Any]) -> dict[str, Any]:
     name = tool["name"]
     args = tool.get("args") or {}
+
+    if name == "web_search":
+        query = str(args.get("query", "")).strip()[:200]
+        if not query:
+            return {"name": name, "ok": False, "summary": "pesquisa vazia", "detail": None}
+        results = _web_search(query, int(args.get("limit", 5) or 5))
+        if not results:
+            return {"name": name, "ok": False, "summary": "nenhum resultado na web (ou sem conexão)", "detail": {"results": []}}
+        return {
+            "name": name,
+            "ok": True,
+            "summary": f"{len(results)} resultados para '{query}'",
+            "detail": {"query": query, "results": results},
+        }
 
     if name == "exec":
         r = _backend("POST", "/exec", {"cmd": args.get("cmd", "")}, timeout=40)
@@ -1878,6 +1927,7 @@ def run_tool(tool: dict[str, Any]) -> dict[str, Any]:
 MAX_TOOL_ROUNDS = 5
 
 TOOLS_SCHEMA: list[dict[str, Any]] = [
+    {"type": "function", "function": {"name": "web_search", "description": "Pesquisa na web (Wikipédia, em português e inglês) para explicar conceitos, pessoas, lugares e fatos. Use quando o Comandante pedir 'pesquise' ou perguntar sobre algo que você não sabe com certeza. Não cobre notícias do dia nem preços em tempo real. Depois, use APENAS os resultados e cite as fontes (links).", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "o que pesquisar, em poucas palavras"}, "limit": {"type": "integer", "description": "quantidade de resultados (1-8, padrão 5)"}}, "required": ["query"]}}},
     {"type": "function", "function": {"name": "exec", "description": "Executa um comando no Windows (shell).", "parameters": {"type": "object", "properties": {"cmd": {"type": "string", "description": "comando, ex.: start chrome"}}, "required": ["cmd"]}}},
     {"type": "function", "function": {"name": "read_file", "description": "Lê o conteúdo de um arquivo local.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
     {"type": "function", "function": {"name": "sysinfo", "description": "CPU, RAM, disco e uptime reais da máquina.", "parameters": {"type": "object", "properties": {}}}},
@@ -2940,6 +2990,42 @@ def _watch_loop() -> None:
 threading.Thread(target=_watch_loop, daemon=True, name="jarvis-watch").start()
 
 
+def _watch_opinion(app_name: str, title: str) -> str:
+    """Opinião curta (pt-BR) sobre a atividade atual, via o provedor de IA configurado."""
+    fallback = f"Você agora está usando {app_name.replace('.exe', '')}. Quer que eu faça algo nisso?"
+    try:
+        provider = resolve_provider(load_config())
+        if not provider.configured or not provider.models:
+            return fallback
+        notes = _watch_load_notes()
+        top = sorted((notes.get("apps") or {}).items(), key=lambda kv: -int(kv[1].get("minutes", 0)))[:5]
+        recent = ", ".join(f"{a} ({v.get('minutes', 0)} min)" for a, v in top) or "nada ainda"
+        prompt = (
+            "Você é o JARVIS, assistente do Comandante. Ele acabou de trocar de janela para "
+            f"'{app_name}' (título: '{title or '-'}'). Apps mais usados recentemente: {recent}. "
+            "Dê UMA opinião curta em português (até 2 frases), sobre o que ele parece estar fazendo, "
+            "e termine com uma pergunta breve oferecendo ajuda. Sem inventar fatos."
+        )
+        r = requests.post(
+            provider.chat_url,
+            headers=provider.headers(),
+            json={
+                "model": provider.models[0],
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.6,
+                "max_tokens": 120,
+            },
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return fallback
+        text = (r.json().get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        text = strip_html(text).strip()[:400]
+        return text or fallback
+    except Exception:  # noqa: BLE001
+        return fallback
+
+
 @app.get("/api/watch/next")
 async def api_watch_next() -> JSONResponse:
     """Devolve a próxima troca de janela ainda não comentada (uma vez só)."""
@@ -2948,6 +3034,8 @@ async def api_watch_next() -> JSONResponse:
     with _watch_lock:
         event = _watch_state.get("pending")
         _watch_state["pending"] = None
+    if event:
+        event = {**event, "opinion": _watch_opinion(event.get("app", ""), event.get("title", ""))}
     return JSONResponse({"enabled": True, "event": event})
 
 
