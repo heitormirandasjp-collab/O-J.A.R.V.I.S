@@ -3233,7 +3233,7 @@ async function checkAgenda() {
       if (!w.enabled || !w.event) return;
       const { app: appName, title } = w.event;
       pushEvent('info', 'Vigia', `você está em ${appName}${title ? ` — ${title}` : ''}`);
-      speak(w.event.opinion || `Você agora está usando ${appName.replace(/\.exe$/i, '')}. Quer que eu faça algo nisso?`);
+      speak(`Você agora está usando ${appName.replace(/\.exe$/i, '')}. Quer que eu faça algo nisso?`);
     } catch { /* backend fora: tenta de novo no próximo ciclo */ }
   }, 60000);
   setInterval(pollHealth, 30000);
