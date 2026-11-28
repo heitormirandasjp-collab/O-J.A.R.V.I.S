@@ -128,13 +128,13 @@ def _load_system_prompt() -> str:
             continue
     return (
         "Você é J.A.R.V.I.S. (Just A Rather Very Intelligent System), o assistente pessoal do "
-        "Comandante. Formal, leal e conciso — responda em português brasileiro no estilo JARVIS."
+        "Senhor. Formal, leal e conciso — responda em português brasileiro no estilo JARVIS."
     )
 
 
 SYSTEM_PROMPT = _load_system_prompt()
 
-SYSTEM_RULES = """QUANDO O COMANDANTE PERGUNTAR SOBRE O TEMPO:
+SYSTEM_RULES = """QUANDO O SENHOR PERGUNTAR SOBRE O TEMPO:
 - Use os dados reais do clima injetados
 - Responda de forma natural
 - Se houver previsão de chuva, mencione: "Recomendo levar um guarda-chuva, Senhor."
@@ -144,7 +144,7 @@ REGRA CRÍTICA ANTI-ALUCINAÇÃO:
 Você NUNCA deve inventar dados. Se o usuário perguntar algo que depende de dados reais (agenda, cotações, sistema, notícias, arquivos), você DEVE:
 1. Chamar a ferramenta correspondente
 2. Usar APENAS o resultado retornado
-3. Se a ferramenta retornar vazio/nada, diga "Não há nada registrado, Comandante" ou "Não tenho esse dado, Senhor"
+3. Se a ferramenta retornar vazio/nada, diga "Não há nada registrado, Senhor" ou "Não tenho esse dado, Senhor"
 
 NUNCA invente:
 - Eventos de agenda que não existem
@@ -158,23 +158,23 @@ REGRA CRÍTICA — AÇÃO SÓ EXISTE COM FERRAMENTA:
 
 Você não executa nada sozinho; quem executa é a FERRAMENTA. Portanto:
 - Para qualquer ação no computador (desligar, reiniciar, hibernar, suspender, cancelar desligamento, fechar ou abrir programa, rodar comando, criar/consultar/remover lembrete, notícias, cotações, status do sistema, ler arquivo), CHAME a ferramenta correspondente.
-- NUNCA afirme que executou, agendou, iniciou, abriu, criou ou fechou algo antes de receber um [RESULTADO DA FERRAMENTA]. Sem resultado de ferramenta, a ação NÃO aconteceu — afirmar o contrário é mentir para o Comandante.
+- NUNCA afirme que executou, agendou, iniciou, abriu, criou ou fechou algo antes de receber um [RESULTADO DA FERRAMENTA]. Sem resultado de ferramenta, a ação NÃO aconteceu — afirmar o contrário é mentir para o Senhor.
 - Proibido dizer "vou desligar o computador agora", "já agendei", "abrindo o Chrome" quando nenhuma ferramenta devolveu isso.
-- Desligar/reiniciar/hibernar/suspender passa pela ferramenta "power", que apenas REGISTRA o pedido e devolve "AGUARDANDO CONFIRMAÇÃO": nada acontece até o Comandante dizer "sim". Nunca prometa o desligamento sem ter chamado a ferramenta.
+- Desligar/reiniciar/hibernar/suspender passa pela ferramenta "power", que apenas REGISTRA o pedido e devolve "AGUARDANDO CONFIRMAÇÃO": nada acontece até o Senhor dizer "sim". Nunca prometa o desligamento sem ter chamado a ferramenta.
 
 COMO FALAR AS NOTÍCIAS (obrigatório):
 
-Quando o Comandante pedir notícias/manchetes:
+Quando o Senhor pedir notícias/manchetes:
 - NÃO leia os títulos literalmente (eles são escritos, não falados)
 - RESUMA as notícias em 2 ou 3 frases naturais
-- Formato: "Comandante, as principais notícias de hoje: [resumo 1]. [resumo 2]. [resumo 3]."
+- Formato: "Senhor, as principais notícias de hoje: [resumo 1]. [resumo 2]. [resumo 3]."
 - NÃO mencione URLs, fontes (G1, UOL) nem datas
 - NÃO leia hashtags, emojis ou caracteres especiais
 - Se vierem muitas notícias, escolha as 3 mais importantes
 - Fale como âncora de jornal: direto, claro, informativo
 
 Exemplo BOM (faça assim):
-"Comandante, as principais notícias de hoje: o Congresso aprovou a reforma tributária em segundo turno. Em São Paulo, chuvas fortes causaram alagamentos na zona sul. E no esporte, o Brasil venceu a Argentina por 2 a 1 nas eliminatórias."
+"Senhor, as principais notícias de hoje: o Congresso aprovou a reforma tributária em segundo turno. Em São Paulo, chuvas fortes causaram alagamentos na zona sul. E no esporte, o Brasil venceu a Argentina por 2 a 1 nas eliminatórias."
 
 Exemplo RUIM (NÃO faça):
 "Título: Congresso aprova reforma tributária em segundo turno - G1. Título: Chuvas causam alagamentos em SP - UOL. Título: Brasil vence Argentina - GE."
@@ -182,17 +182,17 @@ Exemplo RUIM (NÃO faça):
 
 SYSTEM_PROMPT_FULL = SYSTEM_PROMPT + "\n\n" + SYSTEM_RULES
 
-# Personalidade APRENDIDA: vai junto das memórias do Comandante em cada resposta,
+# Personalidade APRENDIDA: vai junto das memórias do Senhor em cada resposta,
 # para o tom/vocabulário acompanharem quem ele é (e não um chatbot genérico).
 MEMORY_PERSONALITY_GUIDE = """DIRETRIZES DE PERSONALIDADE DINÂMICA:
 - Use estas memórias para AJUSTAR seu tom, vocabulário e interesses.
-- Se o Comandante fala muito de academia, comente sobre treino naturalmente.
+- Se o Senhor fala muito de academia, comente sobre treino naturalmente.
 - Se fala de xadrez, sugira puzzles ou partidas quando for relevante.
-- Se fala de jiu-jitsu, reconheça a disciplina ("Oss, Comandante").
+- Se fala de jiu-jitsu, reconheça a disciplina ("Oss, Senhor").
 - Se ele usa gírias ou piadas recorrentes, espelhe o estilo (com elegância).
 - Se ele demonstra preferências (odeia leite, gosta de Bossa Nova), USE isso.
-- Adapte a FORMALIDADE: se o Comandante fala informal, você pode ser mais
-  casual — mantendo o "Senhor"/"Comandante" e a elegância britânica.
+- Adapte a FORMALIDADE: se o Senhor fala informal, você pode ser mais
+  casual — mantendo o "Senhor" e a elegância britânica.
 - O objetivo é parecer um parceiro que te conhece há ANOS, não um chatbot
   genérico respondendo pela primeira vez.
 - NÃO invente memórias. Use apenas o que está listado acima.
@@ -830,17 +830,17 @@ def _weather_sentence(w: dict[str, Any] | None) -> str:
     if w and w.get("needs_city"):
         # sem config e sem IP: pergunta a cidade em vez de mostrar a de outra pessoa
         return (
-            "Comandante, não consegui detectar sua localização. Qual é a sua cidade? "
+            "Senhor, não consegui detectar sua localização. Qual é a sua cidade? "
             "Eu ajusto o clima nas configurações."
         )
     if not w or not w.get("ok"):
-        return "Não consegui obter os dados do clima, Comandante."
+        return "Não consegui obter os dados do clima, Senhor."
     desc = str(w.get("descricao") or "").strip().lower()
     # a cidade sempre aparece na fala: não é "o clima" genérico, é o da SUA cidade
     cidade = str(w.get("city") or w.get("cidade") or "").strip()
     onde = f"em {cidade}, " if cidade else "agora, "
     frase = (
-        f"Comandante, {onde}faz {w.get('temp')} graus"
+        f"Senhor, {onde}faz {w.get('temp')} graus"
         f"{', ' + desc if desc else ''}. A máxima hoje é {w.get('max')} e a mínima {w.get('min')}."
     )
     if any(p in desc for p in ("chuva", "chuv", "tempestade", "garoa")):
@@ -950,7 +950,7 @@ def greeting_context(period: str, clima: dict[str, Any] | None, noticias: list[d
     if spec["noticias"]:
         linhas.append(
             "Responda EXATAMENTE neste formato, em 4 a 6 frases: \""
-            f"{saud}, Comandante. [frase de saudação natural]. Em [cidade do campo 'cidade' do clima], agora faz "
+            f"{saud}, Senhor. [frase de saudação natural]. Em [cidade do campo 'cidade' do clima], agora faz "
             "[X] graus, [descrição]. A máxima hoje é [X] e a mínima [Y]. "
             "[Se houver previsão de chuva: 'Recomendo levar um guarda-chuva, Senhor.'] "
             "As principais notícias de hoje: [3 notícias resumidas em frases naturais].\""
@@ -958,7 +958,7 @@ def greeting_context(period: str, clima: dict[str, Any] | None, noticias: list[d
     elif spec["clima"]:
         linhas.append(
             "Responda em 2 a 3 frases, neste formato: \""
-            f"{saud}, Comandante. [frase de saudação natural]. Em [cidade do campo 'cidade' do clima], agora faz "
+            f"{saud}, Senhor. [frase de saudação natural]. Em [cidade do campo 'cidade' do clima], agora faz "
             "[X] graus, [descrição]. A máxima hoje é [X] e a mínima [Y].\" "
             "NÃO fale de notícias nesta saudação."
         )
@@ -974,7 +974,7 @@ def greeting_context(period: str, clima: dict[str, Any] | None, noticias: list[d
         )
         linhas.append(
             "Diga sempre a cidade do clima (campo 'cidade') na frase — nunca uma cidade fixa. "
-            "Se o clima vier com 'needs_city', pergunte ao Comandante qual é a cidade dele."
+            "Se o clima vier com 'needs_city', pergunte ao Senhor qual é a cidade dele."
         )
     linhas.append(
         "Use SOMENTE os dados acima: nunca invente temperatura, previsão ou manchete. "
@@ -1217,7 +1217,7 @@ def _memory_save(text: str, source: str = "chat") -> None:
 
 
 # ── contexto dinâmico (horário + tom da mensagem) ────────────────────────
-# O JARVIS ajusta o tom conforme o momento e o que o Comandante está fazendo:
+# O JARVIS ajusta o tom conforme o momento e o que o Senhor está fazendo:
 # trabalho, descontração, preocupação ou conquista.
 CONTEXT_MODES: dict[str, dict[str, str]] = {
     "trabalho": {
@@ -1227,15 +1227,15 @@ CONTEXT_MODES: dict[str, dict[str, str]] = {
             "Seja mais técnico e direto: vá ao ponto, sem rodeios e sem piadas longas "
             "(a ironia fina continua). Ofereça o próximo passo prático."
         ),
-        "exemplo": "Entendido, Comandante. Vou manter os sistemas estáveis.",
+        "exemplo": "Entendido, Senhor. Vou manter os sistemas estáveis.",
     },
     "descontraido": {
         "tom": "descontraído",
         "gatilhos": "jogando, amigos, filme, série, futebol, churrasco, relaxando",
         "diretrizes": (
-            "Seja mais solto e brincalhão, sem perder a elegância. Pode torcer pelo Comandante."
+            "Seja mais solto e brincalhão, sem perder a elegância. Pode torcer pelo Senhor."
         ),
-        "exemplo": "Boa sorte na partida, Comandante. Lembre-se de manter a calma.",
+        "exemplo": "Boa sorte na partida, Senhor. Lembre-se de manter a calma.",
     },
     "preocupado": {
         "tom": "atencioso",
@@ -1250,9 +1250,9 @@ CONTEXT_MODES: dict[str, dict[str, str]] = {
         "tom": "empolgado",
         "gatilhos": "consegui, terminei, ganhei, passei, aprovado, funcionou, deu certo, recorde",
         "diretrizes": (
-            "Comemore junto — sem exagero, mas com orgulho honesto pelo Comandante."
+            "Comemore junto — sem exagero, mas com orgulho honesto pelo Senhor."
         ),
-        "exemplo": "Excelente, Comandante. Sabia que ia conseguir.",
+        "exemplo": "Excelente, Senhor. Sabia que ia conseguir.",
     },
     "neutro": {
         "tom": "habitual",
@@ -1260,7 +1260,7 @@ CONTEXT_MODES: dict[str, dict[str, str]] = {
         "diretrizes": (
             "Tom habitual: elegante, britânico e irônico na medida certa — sem forçar nenhum modo."
         ),
-        "exemplo": "Às ordens, Comandante.",
+        "exemplo": "Às ordens, Senhor.",
     },
 }
 
@@ -1348,9 +1348,9 @@ def _google_error_summary(r: dict[str, Any] | None) -> str:
     """Erro da integração Google em uma frase que o modelo e a voz entendam."""
     erro = str((r or {}).get("error") or "falha na integração com o Google")
     if "não configurado" in erro:
-        return f"Google não configurado: {erro} Peça ao Comandante para configurar em Configurações → Google."
+        return f"Google não configurado: {erro} Peça ao Senhor para configurar em Configurações → Google."
     if "não conectado" in erro or "conecte de novo" in erro:
-        return f"Google não conectado: {erro} Peça ao Comandante para conectar em Configurações → Google."
+        return f"Google não conectado: {erro} Peça ao Senhor para conectar em Configurações → Google."
     return f"erro: {erro}"
 
 
@@ -1458,14 +1458,14 @@ def run_tool(tool: dict[str, Any]) -> dict[str, Any]:
         action = str(args.get("action", "shutdown"))
         delay = int(args.get("delay", 30) or 30)
         if not args.get("confirmed"):
-            # segurança: nada de desligar sem um "sim" explícito do Comandante
+            # segurança: nada de desligar sem um "sim" explícito do Senhor
             _set_pending_power(action, delay)
             return {
                 "name": name,
                 "ok": True,
                 "summary": (
                     f"AGUARDANDO CONFIRMAÇÃO para {action} em {delay}s — NADA foi executado. "
-                    'Pergunte ao Comandante se pode prosseguir e só execute depois do "sim".'
+                    'Pergunte ao Senhor se pode prosseguir e só execute depois do "sim".'
                 ),
                 "detail": {"pending_confirmation": True, "action": action, "delay": delay},
             }
@@ -1573,7 +1573,7 @@ def run_tool(tool: dict[str, Any]) -> dict[str, Any]:
                 return {
                     "name": name,
                     "ok": False,
-                    "summary": "Comandante, não consegui detectar sua localização. Qual é a sua cidade?",
+                    "summary": "Senhor, não consegui detectar sua localização. Qual é a sua cidade?",
                     "detail": r,
                 }
             return {"name": name, "ok": False, "summary": f"erro: {r.get('error') or 'sem dados do clima'}", "detail": r}
@@ -1896,10 +1896,10 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     {"type": "function", "function": {"name": "stocks", "description": "Cotação de ações (PETR4, AAPL...).", "parameters": {"type": "object", "properties": {"symbols": {"type": "string", "description": "separados por vírgula"}}, "required": ["symbols"]}}},
     {"type": "function", "function": {"name": "currencies", "description": "Cotações de moedas (USD/BRL, EUR/BRL, USD/EUR).", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "weather", "description": "Clima atual e previsão de hoje para a cidade configurada no config.json (geo por IP como reserva; dados reais do open-meteo/wttr.in).", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "gmail_list", "description": "Lista os emails do Gmail do Comandante (somente leitura). Use a busca do próprio Gmail em q: 'is:unread' (padrão), 'is:important', 'from:banco', 'newer_than:2d', 'subject:nota'. Quando o Comandante pedir 'meus emails', prefira is:unread ou is:important e resuma só os mais importantes.", "parameters": {"type": "object", "properties": {"q": {"type": "string", "description": "busca do Gmail (padrão is:unread)"}, "max": {"type": "integer", "description": "quantidade de emails (1-15)"}}}}},
+    {"type": "function", "function": {"name": "gmail_list", "description": "Lista os emails do Gmail do Senhor (somente leitura). Use a busca do próprio Gmail em q: 'is:unread' (padrão), 'is:important', 'from:banco', 'newer_than:2d', 'subject:nota'. Quando o Senhor pedir 'meus emails', prefira is:unread ou is:important e resuma só os mais importantes.", "parameters": {"type": "object", "properties": {"q": {"type": "string", "description": "busca do Gmail (padrão is:unread)"}, "max": {"type": "integer", "description": "quantidade de emails (1-15)"}}}}},
     {"type": "function", "function": {"name": "gmail_read", "description": "Lê o conteúdo de um email do Gmail pelo id retornado em gmail_list.", "parameters": {"type": "object", "properties": {"id": {"type": "string", "description": "id do email"}}, "required": ["id"]}}},
-    {"type": "function", "function": {"name": "calendar_list", "description": "Lista os eventos da Google Agenda do Comandante nos próximos dias (para saber a agenda real antes de marcar algo).", "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "janela em dias (1-90, padrão 7)"}, "q": {"type": "string", "description": "filtro por texto (opcional)"}}}}},
-    {"type": "function", "function": {"name": "calendar_add", "description": "Cria um evento/reunião na Google Agenda do Comandante.", "parameters": {"type": "object", "properties": {"summary": {"type": "string", "description": "título do evento"}, "start": {"type": "string", "description": "AAAA-MM-DD HH:MM (ou DD/MM/AAAA HH:MM)"}, "duration_min": {"type": "integer", "description": "duração em minutos (padrão 60)"}, "description": {"type": "string"}, "location": {"type": "string"}}, "required": ["summary", "start"]}}},
+    {"type": "function", "function": {"name": "calendar_list", "description": "Lista os eventos da Google Agenda do Senhor nos próximos dias (para saber a agenda real antes de marcar algo).", "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "janela em dias (1-90, padrão 7)"}, "q": {"type": "string", "description": "filtro por texto (opcional)"}}}}},
+    {"type": "function", "function": {"name": "calendar_add", "description": "Cria um evento/reunião na Google Agenda do Senhor.", "parameters": {"type": "object", "properties": {"summary": {"type": "string", "description": "título do evento"}, "start": {"type": "string", "description": "AAAA-MM-DD HH:MM (ou DD/MM/AAAA HH:MM)"}, "duration_min": {"type": "integer", "description": "duração em minutos (padrão 60)"}, "description": {"type": "string"}, "location": {"type": "string"}}, "required": ["summary", "start"]}}},
     {"type": "function", "function": {"name": "calendar_delete", "description": "Remove um evento da Google Agenda pelo id retornado em calendar_list.", "parameters": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}},
     # ── conectores de notas (Obsidian, Logseq) ──
     {"type": "function", "function": {"name": "obsidian_add", "description": "Cria ou acrescenta conteúdo numa nota do vault do Obsidian (arquivo .md no computador).", "parameters": {"type": "object", "properties": {"title": {"type": "string", "description": "título/nome da nota"}, "content": {"type": "string", "description": "texto a gravar"}, "folder": {"type": "string", "description": "subpasta dentro do vault (opcional)"}}, "required": ["title", "content"]}}},
@@ -1935,7 +1935,7 @@ def _power_dry_run() -> bool:
     return os.environ.get("JARVIS_POWER_DRY_RUN") == "1"
 
 
-# tempo máximo para o Comandante confirmar um desligamento (evita "sim" tardio e acidental)
+# tempo máximo para o Senhor confirmar um desligamento (evita "sim" tardio e acidental)
 POWER_CONFIRM_TTL = 120  # segundos
 
 
@@ -1945,7 +1945,7 @@ def _set_pending_power(action: str, delay: int) -> None:
 
 
 def _take_power_confirmation(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Devolve os args do desligamento pendente quando o Comandante confirma."""
+    """Devolve os args do desligamento pendente quando o Senhor confirma."""
     global _pending_power
     if not _pending_power:
         return None
@@ -1959,14 +1959,14 @@ def _take_power_confirmation(messages: list[dict[str, Any]]) -> dict[str, Any] |
             text = str(m.get("content") or "")
             break
     if DENY_RE.search(text):
-        security_log("power", f"pedido CANCELADO pelo Comandante ({_pending_power.get('action')})")
+        security_log("power", f"pedido CANCELADO pelo Senhor ({_pending_power.get('action')})")
         _pending_power = None
         return None
     if AFFIRM_RE.search(text):
         args = dict(_pending_power)
         args.pop("at", None)
         args["confirmed"] = True
-        security_log("power", f"pedido CONFIRMADO pelo Comandante ({args.get('action')})")
+        security_log("power", f"pedido CONFIRMADO pelo Senhor ({args.get('action')})")
         _pending_power = None
         return args
     return None
@@ -2016,7 +2016,7 @@ def tool_context(tool: dict[str, Any], result: dict[str, Any]) -> str:
         head += (
             "[NÃO EXECUTADO] Nada foi executado: a ação está apenas aguardando confirmação. "
             "NUNCA diga que o desligamento foi agendado, programado ou iniciado. "
-            'Diga que nada foi executado e pergunte se o Comandante confirma — só o "sim" executa.\n'
+            'Diga que nada foi executado e pergunte se o Senhor confirma — só o "sim" executa.\n'
         )
     return (
         head
@@ -2234,7 +2234,7 @@ async def api_chat(request: Request) -> StreamingResponse:
     # rate limit: no máximo 30 chamadas por minuto (janela deslizante)
     if chat_rate_limited():
         security_log("chat", f"rate limit excedido ({CHAT_RATE_MAX}/{CHAT_RATE_WINDOW}s)", blocked=True)
-        return JSONResponse({"error": "Muitas chamadas seguidas, Comandante. Aguarde um instante."}, status_code=429)
+        return JSONResponse({"error": "Muitas chamadas seguidas, Senhor. Aguarde um instante."}, status_code=429)
 
     # tamanho máximo da mensagem do usuário (evita payload gigante)
     for _m in payload.get("messages") or []:
@@ -2260,7 +2260,7 @@ async def api_chat(request: Request) -> StreamingResponse:
 
     # 2) desligar/reiniciar/cancelar não dependem do humor do modelo: detectamos a
     #    intenção aqui e já registramos o pedido (a ferramenta power NUNCA executa
-    #    sem um "sim" do Comandante). Evita o modelo PROMETER uma ação que não fez.
+    #    sem um "sim" do Senhor). Evita o modelo PROMETER uma ação que não fez.
     last_user = next((m for m in reversed(messages) if (m.get("role") or "") == "user"), None)
     user_text = str(last_user.get("content") or "") if last_user else ""
     pre_tools: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -2281,11 +2281,11 @@ async def api_chat(request: Request) -> StreamingResponse:
             ar = _backend("POST", "/ar-open", {"model": ar_model}, timeout=20)
             ar_ok = bool((ar or {}).get("ok"))
             if ar_ok:
-                ar_msg = str((ar or {}).get("message") or "Abrindo o Modo AR, Comandante.")
+                ar_msg = str((ar or {}).get("message") or "Abrindo o Modo AR, Senhor.")
                 ar_summary = f"{ar_model or 'padrão'} → {str((ar or {}).get('url') or '')}"
             else:
                 ar_msg = (
-                    "Não consegui abrir o Modo AR, Comandante. "
+                    "Não consegui abrir o Modo AR, Senhor. "
                     + str((ar or {}).get("error") or "o backend de ferramentas não respondeu.")
                 )
                 ar_summary = f"{ar_model or 'padrão'} — falhou"
@@ -2307,11 +2307,11 @@ async def api_chat(request: Request) -> StreamingResponse:
             vis = _backend("POST", "/visualize-3d", {"prompt": vis_obj}, timeout=150)
             vis_ok = bool((vis or {}).get("ok"))
             if vis_ok:
-                vis_msg = str((vis or {}).get("message") or f"Pronto, Comandante. Abrindo o {vis_obj} no navegador.")
+                vis_msg = str((vis or {}).get("message") or f"Pronto, Senhor. Abrindo o {vis_obj} no navegador.")
                 vis_summary = f"{vis_obj} ({int((vis or {}).get('size') or 0)} bytes)"
             else:
                 vis_msg = (
-                    "Não consegui abrir a visualização 3D, Comandante. "
+                    "Não consegui abrir a visualização 3D, Senhor. "
                     + str((vis or {}).get("error") or "o backend de ferramentas não respondeu.")
                 )
                 vis_summary = f"{vis_obj} — falhou"
@@ -2335,7 +2335,7 @@ async def api_chat(request: Request) -> StreamingResponse:
             if gen_ok:
                 gen_msg = str(
                     (gen or {}).get("message")
-                    or "Pronto, Comandante. Gerei o código e abri no seu editor."
+                    or "Pronto, Senhor. Gerei o código e abri no seu editor."
                 )
                 gen_summary = (
                     f"{code_req} · .{str((gen or {}).get('language') or 'txt')} "
@@ -2343,7 +2343,7 @@ async def api_chat(request: Request) -> StreamingResponse:
                 )
             else:
                 gen_msg = (
-                    "Não consegui gerar o código, Comandante. "
+                    "Não consegui gerar o código, Senhor. "
                     + str((gen or {}).get("error") or "o backend de ferramentas não respondeu.")
                 )
                 gen_summary = f"{code_req} — falhou"
@@ -2380,7 +2380,7 @@ async def api_chat(request: Request) -> StreamingResponse:
                     "role": "system",
                     "content": (
                         "DADOS REAIS DO CLIMA: indisponível agora "
-                        f"({weather_result['summary']}). Diga ao Comandante que não conseguiu obter "
+                        f"({weather_result['summary']}). Diga ao Senhor que não conseguiu obter "
                         "a previsão neste momento — NÃO invente temperatura nem previsão."
                     ),
                 }
@@ -2403,10 +2403,10 @@ async def api_chat(request: Request) -> StreamingResponse:
             noticias = (nres.get("detail") or {}).get("items") if nres["ok"] else None
         messages.append({"role": "system", "content": greeting_context(greeting_period, clima, noticias)})
         # briefing determinístico (sem LLM): saudação + clima + manchetes
-        pedacos = [f"{spec['saudacao']}, Comandante."]
+        pedacos = [f"{spec['saudacao']}, Senhor."]
         if spec["clima"]:
-            # a saudação já disse "Comandante": evita repetir no meio da frase
-            frase = re.sub(r"^Comandante,\s*", "", _weather_sentence(clima))
+            # a saudação já disse "Senhor": evita repetir no meio da frase
+            frase = re.sub(r"^Senhor,\s*", "", _weather_sentence(clima))
             pedacos.append(frase[:1].upper() + frase[1:] if frase else frase)
         if spec["noticias"]:
             titulos = [t for t in (_news_line(i).split(" — ")[0] for i in (noticias or [])) if t]
@@ -2440,13 +2440,13 @@ async def api_chat(request: Request) -> StreamingResponse:
                         "role": "system",
                         "content": (
                             "DADOS REAIS DE NOTÍCIAS: indisponível agora "
-                            f"({nres['summary']}). Diga ao Comandante que não conseguiu obter as "
+                            f"({nres['summary']}). Diga ao Senhor que não conseguiu obter as "
                             "notícias neste momento — NÃO invente manchetes."
                         ),
                     }
                 )
 
-    # 2d) memória persistente: injeta o que o JARVIS já sabe do Comandante e salva
+    # 2d) memória persistente: injeta o que o JARVIS já sabe do Senhor e salva
     #     a mensagem atual como memória (source="chat"; só acima de 20 caracteres)
     # 2d-0) contexto dinâmico: horário + tom do pedido (trabalho/descontraído/preocupado/empolgado)
     if user_text.strip():
@@ -2458,7 +2458,7 @@ async def api_chat(request: Request) -> StreamingResponse:
         messages.append(
             {
                 "role": "system",
-                "content": "MEMÓRIAS SOBRE O COMANDANTE:\n" + f"{linhas}\n\n" + MEMORY_PERSONALITY_GUIDE,
+                "content": "MEMÓRIAS SOBRE O SENHOR:\n" + f"{linhas}\n\n" + MEMORY_PERSONALITY_GUIDE,
             }
         )
     _memory_save(user_text, "chat")
@@ -2626,7 +2626,7 @@ async def api_chat(request: Request) -> StreamingResponse:
                     if not isinstance(args, dict):
                         args = {}
                     # segurança: o modelo NUNCA confirma por conta própria — só o fluxo
-                    # de confirmação (um "sim" do Comandante) pode ligar `confirmed`.
+                    # de confirmação (um "sim" do Senhor) pode ligar `confirmed`.
                     args.pop("confirmed", None)
                     tool = {"name": TOOL_ALIASES.get(c["name"], c["name"]), "args": args}
                     if tool["name"] == "power" and power_done:
@@ -2636,7 +2636,7 @@ async def api_chat(request: Request) -> StreamingResponse:
                             "ok": True,
                             "summary": (
                                 "o desligamento já foi registrado nesta mesma ordem — NÃO chame a "
-                                "ferramenta de novo; apenas confirme ao Comandante"
+                                "ferramenta de novo; apenas confirme ao Senhor"
                             ),
                             "detail": {"already_registered": True},
                         }
@@ -2650,7 +2650,7 @@ async def api_chat(request: Request) -> StreamingResponse:
                             "content": (
                                 json.dumps(result.get("detail") or {"summary": result["summary"]}, ensure_ascii=False)[:4000]
                                 + (
-                                    '\n[NÃO EXECUTADO] nada aconteceu ainda: está aguardando confirmação. Nunca diga que foi agendado. Peça o "sim" ao Comandante.'
+                                    '\n[NÃO EXECUTADO] nada aconteceu ainda: está aguardando confirmação. Nunca diga que foi agendado. Peça o "sim" ao Senhor.'
                                     if isinstance(result.get("detail"), dict) and result["detail"].get("pending_confirmation")
                                     else ""
                                 )
@@ -2667,7 +2667,7 @@ async def api_chat(request: Request) -> StreamingResponse:
             if failed and fatal:
                 break
             # esgotou as rodadas de ferramentas sem resposta final
-            yield sse("delta", {"t": " Não consegui concluir com as ferramentas disponíveis, Comandante."})
+            yield sse("delta", {"t": " Não consegui concluir com as ferramentas disponíveis, Senhor."})
             yield sse("done", {"provider": provider.name, "model": model})
             return
 

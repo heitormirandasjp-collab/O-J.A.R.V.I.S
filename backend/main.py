@@ -1505,7 +1505,7 @@ def power(body: PowerIn, _exec_token: str = Depends(require_exec_token)):
         _security_log("power", f"dry-run: {action} (delay {wait}s) — nada foi executado")
         return {"ok": True, "dry_run": True, "action": action, "delay": wait, "cmd": cmd, "executed": False}
 
-    _security_log("power", f"EXECUTANDO {action} (delay {wait}s) — confirmado pelo Comandante")
+    _security_log("power", f"EXECUTANDO {action} (delay {wait}s) — confirmado pelo Senhor")
     try:
         proc = subprocess.run(cmd, shell=True, capture_output=True, timeout=30)
     except Exception as exc:  # noqa: BLE001
@@ -1866,7 +1866,7 @@ def news_brasil(
 # Ordem: config (manual ou escrito à mão) → geolocalização por IP → nada. Os valores
 # abaixo são o padrão histórico, usados no config.json de quem já usava o app (para o
 # clima não quebrar). Sem configuração E sem IP, o /weather NÃO mostra a cidade de
-# outra pessoa: devolve `needs_city` e o JARVIS pergunta a do Comandante.
+# outra pessoa: devolve `needs_city` e o JARVIS pergunta a do Senhor.
 WEATHER_CITY = "São João do Paraíso"
 WEATHER_LAT = -15.377
 WEATHER_LON = -42.006
@@ -2163,7 +2163,7 @@ def weather():
 
     PRIMÁRIO: open-meteo (medição de ~15 min). RESERVA: wttr.in (mede de 1 a 3 h atrás).
     Sem configuração e sem IP, NÃO inventa uma cidade: devolve `needs_city` para o
-    JARVIS perguntar a do Comandante.
+    JARVIS perguntar a do Senhor.
     """
     loc = _weather_location()
     if loc["source"] == "none":
@@ -2617,7 +2617,7 @@ def visualize_3d(body: Visualize3DIn):
         "id": viz_id,
         "path": str(path),
         "size": len(html),
-        "message": f"Abrindo {article}{prompt} no navegador, Comandante.",
+        "message": f"Abrindo {article}{prompt} no navegador, Senhor.",
     }
 
 
@@ -2758,7 +2758,7 @@ def agenda_check(window: int = Query(5, ge=1, le=1440)):
 
 
 # ── 11b. Google: Gmail + Agenda (OAuth 2.0) ─────────────────────────────
-# O JARVIS lê os emails e lê/cria/apaga eventos na agenda do Google do Comandante.
+# O JARVIS lê os emails e lê/cria/apaga eventos na agenda do Google do Senhor.
 # Fluxo: o usuário cria um cliente OAuth "Desktop app" no Google Cloud, cola o Client ID e o
 # Client Secret nas configurações, clica em "Conectar Google" — o backend abre um servidor
 # local em 127.0.0.1:8899/google/callback, recebe o código e guarda o refresh token em
@@ -3686,9 +3686,9 @@ def ar_open(body: ArOpenIn):
         )
     _security_log("ar-open", f"{modelo or 'padrão'} -> {url}")
     if modelo:
-        frase = f"Abrindo {_AR_ARTIGO.get(modelo, 'o')} {modelo} no Modo AR, Comandante."
+        frase = f"Abrindo {_AR_ARTIGO.get(modelo, 'o')} {modelo} no Modo AR, Senhor."
     else:
-        frase = "Abrindo o Modo AR, Comandante."
+        frase = "Abrindo o Modo AR, Senhor."
     return {"ok": True, "model": modelo or None, "url": url, "page": "/ar.html", "message": frase}
 
 
@@ -3873,7 +3873,7 @@ GENCODE_LANG_ALIASES = {
     "pagina": "html",
     "web": "html",
 }
-# Pistas usadas quando o Comandante não diz a linguagem (a mais citada ganha).
+# Pistas usadas quando o Senhor não diz a linguagem (a mais citada ganha).
 GENCODE_LANG_HINTS: dict[str, tuple[str, ...]] = {
     "md": ("markdown", "readme", "documenta", "artigo", "texto", "explica"),
     "sql": ("sql", "consulta", "banco de dados"),
@@ -4127,9 +4127,9 @@ def generate_code(body: GenerateCodeIn):
         "size": size,
         "truncated": truncated,
         "message": (
-            "Pronto, Comandante. Gerei o código e abri no seu navegador."
+            "Pronto, Senhor. Gerei o código e abri no seu navegador."
             if lang == "html"
-            else "Pronto, Comandante. Gerei o código e abri no seu editor."
+            else "Pronto, Senhor. Gerei o código e abri no seu editor."
         ),
     }
 

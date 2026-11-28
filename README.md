@@ -1312,6 +1312,28 @@ path traversal (`../../fora` fica contida no vault), journal e página do Logseq
 4. **Privacidade** — escopo de leitura no Gmail (`gmail.readonly`, sem envio/exclusão), Client
    Secret mascarado em `/api/config/masked` e nenhum token devolvido ao HUD.
 
+## Mudanças recentes (v1.0.30)
+
+- **O JARVIS agora trata o usuário por "Senhor"**, não mais por "Comandante". A troca foi
+  feita no prompt do sistema (`system_prompt.txt`), nas regras embutidas em `app.py` e em
+  `backend/main.py`, nas mensagens de voz de `public/app.js` ("Voz ativada, senhor.") e no
+  rótulo da bolha do usuário no HUD (`SENHOR`). Nenhuma outra regra de personalidade mudou.
+- **Vigia da janela em uso (novo, desligado por padrão)**: quando `watch_enabled` está ligado
+  em Configurações → *"Vigiar a janela em uso"*, uma thread (`_watch_tick`, a cada
+  `WATCH_INTERVAL_S = 60` s) lê **apenas** o nome do processo e o título da janela em primeiro
+  plano — sem captura de tela e sem dependência nova (`ctypes` + `psutil`, que já era usado).
+  Cada troca de janela vira um evento que o HUD busca em `GET /api/watch/next` (uma vez só) e
+  comenta em voz alta; o tempo por app é acumulado em `%APPDATA%\JARVIS\watch_notes.json` e
+  pode ser lido em `GET /api/watch/notes` (top 20 apps por minutos observados).
+- **Busca na web por Wikipedia e "opinião" do vigia foram revertidas**: a ideia de uma tool
+  `web_search` e de o vigia opinar sobre a atividade não ficou no código — o commit foi
+  desfeito (`147f601`) para manter o chat respondendo normalmente.
+- **README: erro 403 do Gmail** — se a tela de Gmail devolver 403 com
+  *"Gmail API has not been used in project … before or it is disabled"*, o problema é a API
+  desativada no Google Cloud, não o JARVIS. Veja a seção **"Erro 403 do Gmail"** acima.
+
+`v1.0.30` — `JARVIS.exe` e instalador `JARVIS-Setup.exe` regerados.
+
 ## Mudanças recentes (v1.0.29)
 
 Versão de **endurecimento do backend**: nada de tela nova, tudo em `app.py`,

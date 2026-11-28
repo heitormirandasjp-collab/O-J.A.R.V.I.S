@@ -91,7 +91,7 @@ function loadSystemPrompt() {
     return fs.readFileSync(path.join(__dirname, 'system_prompt.txt'), 'utf8').trim();
   } catch {
     return 'Você é J.A.R.V.I.S. (Just A Rather Very Intelligent System), o assistente pessoal do '
-      + 'Comandante. Formal, leal e conciso — responda em português brasileiro no estilo JARVIS.';
+      + 'Senhor. Formal, leal e conciso — responda em português brasileiro no estilo JARVIS.';
   }
 }
 
@@ -100,7 +100,7 @@ const SYSTEM_RULES = `REGRA CRÍTICA ANTI-ALUCINAÇÃO:
 Você NUNCA deve inventar dados. Se o usuário perguntar algo que depende de dados reais (agenda, cotações, sistema, notícias, arquivos), você DEVE:
 1. Chamar a ferramenta correspondente
 2. Usar APENAS o resultado retornado
-3. Se a ferramenta retornar vazio/nada, diga "Não há nada registrado, Comandante" ou "Não tenho esse dado, Senhor"
+3. Se a ferramenta retornar vazio/nada, diga "Não há nada registrado, Senhor" ou "Não tenho esse dado, Senhor"
 
 NUNCA invente:
 - Eventos de agenda que não existem
@@ -114,29 +114,29 @@ REGRA CRÍTICA — AÇÃO SÓ EXISTE COM FERRAMENTA:
 
 Você não executa nada sozinho; quem executa é a FERRAMENTA. Portanto:
 - Para qualquer ação no computador (desligar, reiniciar, hibernar, suspender, cancelar desligamento, fechar ou abrir programa, rodar comando, criar/consultar/remover lembrete, notícias, cotações, status do sistema, ler arquivo), CHAME a ferramenta correspondente.
-- NUNCA afirme que executou, agendou, iniciou, abriu, criou ou fechou algo antes de receber um [RESULTADO DA FERRAMENTA]. Sem resultado de ferramenta, a ação NÃO aconteceu — afirmar o contrário é mentir para o Comandante.
+- NUNCA afirme que executou, agendou, iniciou, abriu, criou ou fechou algo antes de receber um [RESULTADO DA FERRAMENTA]. Sem resultado de ferramenta, a ação NÃO aconteceu — afirmar o contrário é mentir para o Senhor.
 - Proibido dizer "vou desligar o computador agora", "já agendei", "abrindo o Chrome" quando nenhuma ferramenta devolveu isso.
-- Desligar/reiniciar/hibernar/suspender passa pela ferramenta "power", que apenas REGISTRA o pedido e devolve "AGUARDANDO CONFIRMAÇÃO": nada acontece até o Comandante dizer "sim". Nunca prometa o desligamento sem ter chamado a ferramenta.
+- Desligar/reiniciar/hibernar/suspender passa pela ferramenta "power", que apenas REGISTRA o pedido e devolve "AGUARDANDO CONFIRMAÇÃO": nada acontece até o Senhor dizer "sim". Nunca prometa o desligamento sem ter chamado a ferramenta.
 
 COMO FALAR AS NOTÍCIAS (obrigatório):
 
-Quando o Comandante pedir notícias/manchetes:
+Quando o Senhor pedir notícias/manchetes:
 - NÃO leia os títulos literalmente (eles são escritos, não falados)
 - RESUMA as notícias em 2 ou 3 frases naturais
-- Formato: "Comandante, as principais notícias de hoje: [resumo 1]. [resumo 2]. [resumo 3]."
+- Formato: "Senhor, as principais notícias de hoje: [resumo 1]. [resumo 2]. [resumo 3]."
 - NÃO mencione URLs, fontes (G1, UOL) nem datas
 - NÃO leia hashtags, emojis ou caracteres especiais
 - Se vierem muitas notícias, escolha as 3 mais importantes
 - Fale como âncora de jornal: direto, claro, informativo
 
 Exemplo BOM (faça assim):
-"Comandante, as principais notícias de hoje: o Congresso aprovou a reforma tributária em segundo turno. Em São Paulo, chuvas fortes causaram alagamentos na zona sul. E no esporte, o Brasil venceu a Argentina por 2 a 1 nas eliminatórias."
+"Senhor, as principais notícias de hoje: o Congresso aprovou a reforma tributária em segundo turno. Em São Paulo, chuvas fortes causaram alagamentos na zona sul. E no esporte, o Brasil venceu a Argentina por 2 a 1 nas eliminatórias."
 
 Exemplo RUIM (NÃO faça):
 "Título: Congresso aprova reforma tributária em segundo turno - G1. Título: Chuvas causam alagamentos em SP - UOL. Título: Brasil vence Argentina - GE."
 
 LEMBRETE FINAL:
-Você NÃO é o ChatGPT. Você NÃO é um assistente genérico. Você é o JARVIS — sofisticado, leal, irônico na medida, e absolutamente dedicado ao Comandante. Cada resposta deve parecer que veio de uma IA de ficção científica que desenvolveu personalidade própria ao longo de anos de convivência.`;
+Você NÃO é o ChatGPT. Você NÃO é um assistente genérico. Você é o JARVIS — sofisticado, leal, irônico na medida, e absolutamente dedicado ao Senhor. Cada resposta deve parecer que veio de uma IA de ficção científica que desenvolveu personalidade própria ao longo de anos de convivência.`;
 
 const SYSTEM_PROMPT = loadSystemPrompt() + '\n\n' + SYSTEM_RULES;
 
@@ -1011,14 +1011,14 @@ async function runTool(tool) {
     const action = String(tool.args.action || 'shutdown');
     const delay = Number(tool.args.delay ?? 30);
     if (!tool.args.confirmed) {
-      // segurança: nada de desligar sem um "sim" explícito do Comandante
+      // segurança: nada de desligar sem um "sim" explícito do Senhor
       setPendingPower(action, delay);
       return {
         name: 'power',
         ok: true,
         summary:
           `AGUARDANDO CONFIRMAÇÃO para ${action} em ${delay}s — NADA foi executado. ` +
-          'Pergunte ao Comandante se pode prosseguir e só execute depois do "sim".',
+          'Pergunte ao Senhor se pode prosseguir e só execute depois do "sim".',
         detail: { pending_confirmation: true, action, delay },
       };
     }
@@ -1182,7 +1182,7 @@ function toolContext(tool, result) {
     head +=
       '[NÃO EXECUTADO] Nada foi executado: a ação está apenas aguardando confirmação. ' +
       'NUNCA diga que o desligamento foi agendado, programado ou iniciado. ' +
-      'Diga que nada foi executado e pergunte se o Comandante confirma — só o "sim" executa.\n';
+      'Diga que nada foi executado e pergunte se o Senhor confirma — só o "sim" executa.\n';
   }
   return (
     head +
@@ -1233,14 +1233,14 @@ const TOOL_ALIASES = {
 
 // desligar/reiniciar/hibernar/suspender só acontece depois de um "sim" explícito
 let pendingPower = null;
-// tempo máximo para o Comandante confirmar (evita "sim" tardio e acidental)
+// tempo máximo para o Senhor confirmar (evita "sim" tardio e acidental)
 const POWER_CONFIRM_TTL_MS = 120000;
 
 function setPendingPower(action, delay) {
   pendingPower = { action, delay, at: Date.now() };
 }
 
-/** Devolve os args do desligamento pendente quando o Comandante confirma. */
+/** Devolve os args do desligamento pendente quando o Senhor confirma. */
 function takePowerConfirmation(messages) {
   if (!pendingPower) return null;
   if (Date.now() - (pendingPower.at || 0) > POWER_CONFIRM_TTL_MS) {
@@ -1364,7 +1364,7 @@ async function handleChat(req, res) {
   // rate limit: no máximo 30 chamadas por minuto
   if (chatRateLimited()) {
     res.writeHead(429, { 'Content-Type': 'application/json', ...securityHeaders() });
-    res.end(JSON.stringify({ error: 'Muitas chamadas seguidas, Comandante. Aguarde um instante.' }));
+    res.end(JSON.stringify({ error: 'Muitas chamadas seguidas, Senhor. Aguarde um instante.' }));
     return;
   }
 
@@ -1401,8 +1401,8 @@ async function handleChat(req, res) {
       summary: ok ? `${arModel || 'padrão'} → ${(ar && ar.url) || ''}` : `${arModel || 'padrão'} — falhou`,
     });
     const text = ok
-      ? ar.message || 'Abrindo o Modo AR, Comandante.'
-      : `Não consegui abrir o Modo AR, Comandante. ${(ar && ar.error) || 'o backend de ferramentas não respondeu.'}`;
+      ? ar.message || 'Abrindo o Modo AR, Senhor.'
+      : `Não consegui abrir o Modo AR, Senhor. ${(ar && ar.error) || 'o backend de ferramentas não respondeu.'}`;
     sse(res, 'start', { provider: 'jarvis-ar', model: 'ar-open' });
     for (let i = 0; i < text.length; i += 28) sse(res, 'delta', { t: text.slice(i, i + 28) });
     sse(res, 'done', { provider: 'jarvis-ar', model: 'ar-open' });
@@ -1428,8 +1428,8 @@ async function handleChat(req, res) {
       summary: ok ? `${visObj} (${(vis && vis.size) || 0} bytes)` : `${visObj} — falhou`,
     });
     const text = ok
-      ? (vis.message || `Pronto, Comandante. Abrindo o ${visObj} no navegador.`)
-      : `Não consegui abrir a visualização 3D, Comandante. ${(vis && vis.error) || 'o backend de ferramentas não respondeu.'}`;
+      ? (vis.message || `Pronto, Senhor. Abrindo o ${visObj} no navegador.`)
+      : `Não consegui abrir a visualização 3D, Senhor. ${(vis && vis.error) || 'o backend de ferramentas não respondeu.'}`;
     sse(res, 'start', { provider: 'jarvis-3d', model: 'visualize-3d' });
     for (let i = 0; i < text.length; i += 28) sse(res, 'delta', { t: text.slice(i, i + 28) });
     sse(res, 'done', { provider: 'jarvis-3d', model: 'visualize-3d' });
@@ -1449,7 +1449,7 @@ async function handleChat(req, res) {
   const provider = resolveProvider(cfg);
   const attempts = buildAttempts(cfg);
 
-  // confirmação pendente de desligamento: um "sim" do Comandante executa de verdade
+  // confirmação pendente de desligamento: um "sim" do Senhor executa de verdade
   const confirmed = takePowerConfirmation(messages);
   let confirmedResult = null;
   if (confirmed) {
@@ -1602,7 +1602,7 @@ async function handleChat(req, res) {
         }
         if (!args || typeof args !== 'object') args = {};
         // segurança: o modelo NUNCA confirma por conta própria — só o fluxo de
-        // confirmação (um "sim" do Comandante) pode ligar `confirmed`.
+        // confirmação (um "sim" do Senhor) pode ligar `confirmed`.
         delete args.confirmed;
         const toolName = TOOL_ALIASES[c.name] || c.name;
         const result =
@@ -1613,7 +1613,7 @@ async function handleChat(req, res) {
                 ok: true,
                 summary:
                   'o desligamento já foi registrado nesta mesma ordem — NÃO chame a ferramenta de novo; ' +
-                  'apenas confirme ao Comandante',
+                  'apenas confirme ao Senhor',
                 detail: { already_registered: true },
               }
             : await runTool({ name: toolName, args });
@@ -1628,7 +1628,7 @@ async function handleChat(req, res) {
           content: (
             JSON.stringify(result.detail ?? { summary: result.summary }) +
             (result.detail && result.detail.pending_confirmation
-              ? '\n[NÃO EXECUTADO] nada aconteceu ainda: está aguardando confirmação. Nunca diga que foi agendado. Peça o "sim" ao Comandante.'
+              ? '\n[NÃO EXECUTADO] nada aconteceu ainda: está aguardando confirmação. Nunca diga que foi agendado. Peça o "sim" ao Senhor.'
               : '') +
             '\nUse APENAS estes dados. Se estiver vazio, diga que não há nada registrado — não invente.'
           ).slice(0, 4200),
@@ -1649,7 +1649,7 @@ async function handleChat(req, res) {
 
     // esgotou as rodadas de ferramentas sem resposta final
     if (!closed) {
-      sse(res, 'delta', { t: ' Não consegui concluir com as ferramentas disponíveis, Comandante.' });
+      sse(res, 'delta', { t: ' Não consegui concluir com as ferramentas disponíveis, Senhor.' });
       sse(res, 'done', { provider: a.provider, model: a.model });
     }
     res.end();

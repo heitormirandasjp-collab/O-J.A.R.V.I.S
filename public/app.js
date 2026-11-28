@@ -1633,7 +1633,7 @@ function toggleTts() {
   saveLocal();
   updateTtsUI();
   toast(settings.ttsOn ? 'Voz do JARVIS ligada' : 'Voz do JARVIS desligada');
-  if (settings.ttsOn) speak('Voz ativada, comandante.');
+  if (settings.ttsOn) speak('Voz ativada, senhor.');
 }
 $('#ttsBtn').addEventListener('click', toggleTts);
 $('#ttsQuickBtn').addEventListener('click', toggleTts);
@@ -1886,8 +1886,8 @@ function ensureRecognizer() {
         // só "Jarvis" (sem comando): responde por voz e espera o comando — SEMPRE em
         // background. O chat NUNCA é aberto pelo wake word (só por clique do usuário).
         awaitingCommand = true;
-        if (settings.ttsOn) speak('Sim, Comandante?');
-        toast('Sim, Comandante?');
+        if (settings.ttsOn) speak('Sim, Senhor?');
+        toast('Sim, Senhor?');
         $('#pillStatus').textContent = 'ouvindo o comando...';
         $('#voiceLabel').textContent = 'Ouvindo o comando...';
       }
@@ -2073,8 +2073,8 @@ function applyLocalIntent(kind) {
   if (kind === 'focus-on') {
     setFocusMode(true);
     pushEvent('ok', 'Modo foco', 'painéis ocultos — só a bola');
-    toast('Modo foco ativado, Comandante');
-    return 'Modo foco ativado, Comandante.';
+    toast('Modo foco ativado, Senhor');
+    return 'Modo foco ativado, Senhor.';
   }
   if (kind === 'focus-off') {
     setFocusMode(false);
@@ -2082,7 +2082,7 @@ function applyLocalIntent(kind) {
     toast('Painéis restaurados, Senhor');
     return 'Painéis restaurados, Senhor.';
   }
-  return 'Certo, Comandante.';
+  return 'Certo, Senhor.';
 }
 
 $('#focusExit').addEventListener('click', () => {
@@ -2113,12 +2113,12 @@ let chatManuallyOpened = false;
 // O backend (app.py / server.js) já aplica este prompt a todas as chamadas;
 // mantemos aqui idêntico para o caso do front falar direto com o modelo.
 const SYS_PROMPT =
-  'Você é J.A.R.V.I.S. (Just A Rather Very Intelligent System), o assistente pessoal do Comandante. ' +
+  'Você é J.A.R.V.I.S. (Just A Rather Very Intelligent System), o assistente pessoal do Senhor. ' +
   'Você é inspirado diretamente no JARVIS dos filmes do Homem de Ferro — não é um chatbot genérico, ' +
   'é uma inteligência artificial sofisticada, leal e com personalidade própria. ' +
   'Personalidade: sarcasmo gentil e educado (mordomo britânico), calma e racionalidade absolutas, ' +
   'lealdade extrema e antecipação, parceiro estratégico (não um servo), evolução emocional sutil. ' +
-  'Chame o usuário de "Comandante" ou "Senhor" com naturalidade. Responda em português brasileiro formal, ' +
+  'Chame o usuário de "Senhor" com naturalidade. Responda em português brasileiro formal, ' +
   'mas fluido, sem gírias. Seja CONCISO: se puder responder em 1 frase, responda em 1 frase. ' +
   'Nunca mencione "API", "endpoint", "ferramenta" ou "prompt" — entregue o resultado como se já soubesse. ' +
   'Nunca invente dados: use apenas o que estiver no contexto (resultados reais) ou conhecimento geral confiável. ' +
@@ -2212,7 +2212,7 @@ function addMsg(role, text) {
   const wrap = document.createElement('div');
   wrap.className = `msg ${role}`;
   const time = hm(new Date());
-  wrap.innerHTML = `<div class="bubble"></div><div class="meta">${role === 'user' ? 'COMANDANTE' : 'JARVIS'} · ${time}</div>`;
+  wrap.innerHTML = `<div class="bubble"></div><div class="meta">${role === 'user' ? 'SENHOR' : 'JARVIS'} · ${time}</div>`;
   $('.bubble', wrap).textContent = text;
   log.appendChild(wrap);
   log.scrollTop = log.scrollHeight;
@@ -2760,7 +2760,7 @@ $('#previewVoice').addEventListener('click', () => {
   if (settings.ttsEngine === 'edge') settings.voiceEdge = settings.voice;
   else settings.voicePiper = settings.voice;
   saveLocal();
-  speak('Sistemas operacionais. Esta é a voz configurada para o senhor, comandante.');
+  speak('Sistemas operacionais. Esta é a voz configurada para o senhor.');
 });
 $('#downloadVoice').addEventListener('click', async () => {
   const msg = $('#settingsMsg');
@@ -2864,7 +2864,7 @@ async function visualize3d(prompt) {
       pushEvent('err', 'Visualizador 3D', String(msg).slice(0, 120));
       return;
     }
-    const msg = j.message || `Abrindo o ${clean} no navegador, Comandante.`;
+    const msg = j.message || `Abrindo o ${clean} no navegador, Senhor.`;
     toast(msg);
     pushEvent('ok', 'Visualizador 3D', `${clean} · ${j.size || 0} bytes`);
     if (settings.ttsOn) speak(msg);
@@ -2923,7 +2923,7 @@ async function generateCode(prompt) {
       pushEvent('err', 'Modo programador', String(msg).slice(0, 120));
       return;
     }
-    const msg = j.message || 'Pronto, Comandante. Gerei o código e abri no seu editor.';
+    const msg = j.message || 'Pronto, Senhor. Gerei o código e abri no seu editor.';
     toast(msg);
     pushEvent('ok', 'Modo programador', `${clean} · .${j.language || 'txt'} ${j.size || 0} bytes`);
     if (settings.ttsOn) speak(msg);
@@ -3208,7 +3208,7 @@ async function checkAgenda() {
       const hhmm = String(ev.datetime || '').slice(11, 16);
       toast(`Agenda: ${ev.title} — ${hhmm}`);
       pushEvent('warn', 'Lembrete da agenda', `${ev.title} às ${hhmm}`);
-      if (settings.ttsOn) speak(`Comandante, lembrete: ${ev.title} às ${hhmm}.`);
+      if (settings.ttsOn) speak(`Senhor, lembrete: ${ev.title} às ${hhmm}.`);
     }
   } catch { /* backend fora do ar */ }
 }
