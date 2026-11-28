@@ -571,6 +571,8 @@ def load_config() -> dict[str, Any]:
         "ollamaUrl": clamp_ollama_url(data.get("ollamaUrl", OLLAMA_URL)),
         "ollamaModel": clamp_model_name(data.get("ollamaModel", "")),
         "continuous_listen_minutes": clamp_minutes(data.get("continuous_listen_minutes", 5)),
+        # vigia: observa a janela em uso enquanto o JARVIS está aberto (desligado por padrão)
+        "watch_enabled": bool(data.get("watch_enabled", False)),
         "tts_engine": clamp_tts_engine(data.get("tts_engine", TTS_DEFAULT_ENGINE)),
         "tts_voice": clamp_tts_voice(data.get("tts_voice", ""), data.get("tts_engine", "")),
         # integrações Google (Gmail + Agenda): o cliente OAuth fica no config.json e é lido
@@ -2704,6 +2706,7 @@ async def api_status() -> JSONResponse:
                 "model": cfg["ollamaModel"] or OLLAMA_MODEL,
             },
             "continuous_listen_minutes": cfg["continuous_listen_minutes"],
+            "watch_enabled": bool(cfg.get("watch_enabled")),
             "tts_engine": cfg["tts_engine"],
             "tts_voice": cfg["tts_voice"],
         }
@@ -2736,6 +2739,7 @@ async def api_config_masked() -> JSONResponse:
             "ollamaUrl": cfg["ollamaUrl"],
             "ollamaModel": cfg["ollamaModel"],
             "continuous_listen_minutes": cfg["continuous_listen_minutes"],
+            "watch_enabled": bool(cfg.get("watch_enabled")),
             "configured": provider.configured,
             "tts_engine": cfg["tts_engine"],
             "tts_voice": cfg["tts_voice"],
@@ -2809,6 +2813,8 @@ async def api_config_post(request: Request) -> JSONResponse:
             cfg[chave] = valor.strip()[:limite]
     if body.get("continuous_listen_minutes") is not None:
         cfg["continuous_listen_minutes"] = clamp_minutes(body.get("continuous_listen_minutes"))
+    if body.get("watch_enabled") is not None:
+        cfg["watch_enabled"] = bool(body.get("watch_enabled"))
     if body.get("tts_engine") is not None:
         new_engine = clamp_tts_engine(body.get("tts_engine"))
         if new_engine != cfg["tts_engine"]:
@@ -2846,6 +2852,112 @@ async def api_ollama_test(request: Request) -> JSONResponse:
         body = {}
     url = body.get("url") if isinstance(body, dict) else None
     return JSONResponse(test_ollama(url))
+
+
+# ── vigia: observa a janela em uso enquanto o JARVIS está aberto ─────────
+# Só lê o nome do processo e o título da janela ativa (sem capturar a tela).
+# Desligado por padrão; ligado/desligado em Configurações → vigia_ativo.
+WATCH_INTERVAL_S = 60
+_watch_lock = threading.Lock()
+_watch_state: dict[str, Any] = {"last": None, "pending": None}
+
+
+def _watch_notes_path() -> Path:
+    return _data_dir() / "watch_notes.json"
+
+
+def _active_window() -> dict[str, str]:
+    """Processo e título da janela em primeiro plano (Windows). Vazio se indisponível."""
+    if sys.platform != "win32":
+        return {}
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return {}
+        length = user32.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        import psutil
+
+        proc = psutil.Process(pid.value).name() if pid.value else ""
+        return {"app": proc, "title": buf.value[:160]}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _watch_load_notes() -> dict[str, Any]:
+    try:
+        data = json.loads(_watch_notes_path().read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:  # noqa: BLE001
+        pass
+    return {"apps": {}, "observations": []}
+
+
+def _watch_save_notes(notes: dict[str, Any]) -> None:
+    try:
+        _watch_notes_path().write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _watch_tick() -> None:
+    """Uma observação: registra a janela atual e, se mudou, guarda um comentário pendente."""
+    win = _active_window()
+    if not win.get("app"):
+        return
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    with _watch_lock:
+        notes = _watch_load_notes()
+        apps = notes.setdefault("apps", {})
+        entry = apps.setdefault(win["app"], {"minutes": 0, "last_seen": ""})
+        entry["minutes"] = int(entry.get("minutes", 0)) + 1
+        entry["last_seen"] = now
+        last = _watch_state["last"]
+        if last != win["app"]:
+            _watch_state["pending"] = {"app": win["app"], "title": win["title"], "time": now}
+            _watch_state["last"] = win["app"]
+        _watch_save_notes(notes)
+
+
+def _watch_loop() -> None:
+    while True:
+        time.sleep(WATCH_INTERVAL_S)
+        try:
+            if load_config().get("watch_enabled"):
+                _watch_tick()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+threading.Thread(target=_watch_loop, daemon=True, name="jarvis-watch").start()
+
+
+@app.get("/api/watch/next")
+async def api_watch_next() -> JSONResponse:
+    """Devolve a próxima troca de janela ainda não comentada (uma vez só)."""
+    if not load_config().get("watch_enabled"):
+        return JSONResponse({"enabled": False, "event": None})
+    with _watch_lock:
+        event = _watch_state.get("pending")
+        _watch_state["pending"] = None
+    return JSONResponse({"enabled": True, "event": event})
+
+
+@app.get("/api/watch/notes")
+async def api_watch_notes() -> JSONResponse:
+    """Os apps que o usuário mais usa, com minutos observados (ordenados)."""
+    with _watch_lock:
+        apps = _watch_load_notes().get("apps", {})
+    ranked = sorted(apps.items(), key=lambda kv: kv[1].get("minutes", 0), reverse=True)
+    return JSONResponse({"apps": [{"app": k, **v} for k, v in ranked[:20]]})
 
 
 # ── estáticos ───────────────────────────────────────────────────────────

@@ -2406,6 +2406,7 @@ async function openSettings() {
     $('#setNvidiaModel').value = c.nvidiaModel || '';
     $('#setOllamaUrl').value = c.ollamaUrl || 'http://127.0.0.1:11434/v1';
     $('#setOllamaModel').value = c.ollamaModel || 'llama3';
+    if ($('#setWatch')) $('#setWatch').checked = !!c.watch_enabled;
     setProviderUI(c.provider);
     if (c.tts_engine) settings.ttsEngine = c.tts_engine === 'edge' ? 'edge' : 'piper';
     if (c.tts_voice) {
@@ -2708,6 +2709,7 @@ $('#saveSettings').addEventListener('click', async () => {
       ollamaUrl: $('#setOllamaUrl').value.trim(),
       ollamaModel: $('#setOllamaModel').value.trim(),
       continuous_listen_minutes: Number(settings.continuousMinutes) || 0,
+      watch_enabled: !!$('#setWatch')?.checked,
       tts_engine: settings.ttsEngine,
       tts_voice: settings.voice,
       ...conn,
@@ -3224,6 +3226,16 @@ async function checkAgenda() {
   renderModules();
   await Promise.all([pollSysinfo(), pollHealth(), refreshStatus()]);
   setInterval(pollSysinfo, 4000);
+  // vigia: quando a janela em uso muda, o JARVIS comenta em voz alta (só se a função estiver ligada)
+  setInterval(async () => {
+    try {
+      const w = await fetch('/api/watch/next', { cache: 'no-store' }).then((r) => r.json());
+      if (!w.enabled || !w.event) return;
+      const { app: appName, title } = w.event;
+      pushEvent('info', 'Vigia', `você está em ${appName}${title ? ` — ${title}` : ''}`);
+      speak(`Você agora está usando ${appName.replace(/\.exe$/i, '')}. Quer que eu faça algo nisso?`);
+    } catch { /* backend fora: tenta de novo no próximo ciclo */ }
+  }, 60000);
   setInterval(pollHealth, 30000);
   setInterval(refreshStatus, 20000);
   pushEvent('info', 'JARVIS iniciado', `host ${state.sys ? state.sys.hostname : '—'} · escuta contínua ${settings.wake ? 'ON' : 'OFF'}`);
