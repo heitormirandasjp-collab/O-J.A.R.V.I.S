@@ -110,6 +110,18 @@ Tudo fica em **`config.json`**, na raiz do projeto (no `.exe`, em
 | `weather_lat` · `weather_lon` | coordenadas resolvidas **uma vez** ao salvar a cidade (geocoding do open-meteo) | vazio = detecta por IP |
 | `weather_source` | `manual` quando a cidade veio do campo nas configurações | vazio = `config` |
 
+### Erro 403 no Gmail: "Gmail API has not been used in project … or it is disabled"
+
+Se o JARVIS conectou o Google (⚙ → Google mostra conectado), mas ao pedir os e-mails aparece `HTTP 403: Gmail API has not been used in project <numero> before or it is disabled`, a causa **não** é a conexão: a **Gmail API não está ativada** no projeto do Google Cloud que criou o `googleClientId`. Reconectar não resolve.
+
+Como corrigir (uma vez só, na mesma conta Google do projeto):
+
+1. Abra o link que aparece na mensagem de erro, por exemplo `https://console.developers.google.com/apis/api/gmail.googleapis.com/overview?project=<numero>`.
+2. Clique em **Ativar** (Enable).
+3. Espere 1 a 2 minutos e peça de novo ao JARVIS, sem reconectar.
+
+Se usar a Google Agenda, ative também a **Google Calendar API** pelo mesmo caminho (`calendar-json.googleapis.com`).
+
 **Primeira vez (clone novo)**: copie o template versionado e preencha a chave:
 
 ```bash
